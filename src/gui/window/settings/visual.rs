@@ -1,7 +1,11 @@
 use egui::WidgetText;
 use egui_extras::{Column, TableBuilder};
 
-use crate::{settings::WasabiSettings, utils::NOTE_SPEED_RANGE};
+use crate::{
+    settings::{Language, WasabiSettings},
+    state::WasabiState,
+    utils::NOTE_SPEED_RANGE,
+};
 
 use super::SettingsWindow;
 
@@ -10,24 +14,36 @@ impl SettingsWindow {
         &mut self,
         ui: &mut egui::Ui,
         settings: &mut WasabiSettings,
+        state: &mut WasabiState,
         width: f32,
     ) {
-        ui.heading("General");
+        ui.heading(state.i18n.t("visual.general"));
+        let prev_lang = settings.gui.language;
         egui::Grid::new("general_visual_settings_grid")
             .num_columns(2)
             .spacing(super::SPACING)
             .striped(true)
             .min_col_width(width / 2.0)
             .show(ui, |ui| {
-                ui.label("Check for updates on launch:");
+                ui.label(state.i18n.t("visual.language"));
+                egui::ComboBox::from_id_salt("language_select")
+                    .selected_text(settings.gui.language.as_str())
+                    .show_ui(ui, |ui| {
+                        for lang in Language::ALL {
+                            ui.selectable_value(&mut settings.gui.language, lang, lang.as_str());
+                        }
+                    });
+                ui.end_row();
+
+                ui.label(state.i18n.t("visual.check_updates"));
                 ui.checkbox(&mut settings.gui.check_for_updates, "");
                 ui.end_row();
 
-                ui.label("Enable VSync:");
+                ui.label(state.i18n.t("visual.vsync"));
                 ui.checkbox(&mut settings.gui.vsync, "");
                 ui.end_row();
 
-                ui.label("Skip Control:");
+                ui.label(state.i18n.t("visual.skip_control"));
                 ui.add(
                     egui::DragValue::new(&mut settings.gui.skip_control)
                         .speed(0.5)
@@ -35,7 +51,7 @@ impl SettingsWindow {
                 );
                 ui.end_row();
 
-                ui.label("Speed Control:");
+                ui.label(state.i18n.t("visual.speed_control"));
                 ui.add(
                     egui::DragValue::new(&mut settings.gui.speed_control)
                         .speed(0.5)
@@ -44,8 +60,12 @@ impl SettingsWindow {
                 ui.end_row();
             });
 
+        if settings.gui.language != prev_lang {
+            state.i18n.set_language(settings.gui.language);
+        }
+
         ui.add_space(super::CATEG_SPACE);
-        ui.heading("Scene");
+        ui.heading(state.i18n.t("visual.scene"));
 
         egui::Grid::new("scene_visual_settings_grid")
             .num_columns(2)
@@ -53,15 +73,15 @@ impl SettingsWindow {
             .striped(true)
             .min_col_width(width / 2.0)
             .show(ui, |ui| {
-                ui.label("Background Color: ");
+                ui.label(state.i18n.t("visual.bg_color"));
                 ui.color_edit_button_srgba(&mut settings.scene.bg_color);
                 ui.end_row();
 
-                ui.label("Bar Color: ");
+                ui.label(state.i18n.t("visual.bar_color"));
                 ui.color_edit_button_srgba(&mut settings.scene.bar_color);
                 ui.end_row();
 
-                ui.label("Keyboard Range: ");
+                ui.label(state.i18n.t("visual.key_range"));
                 let mut firstkey = *settings.scene.key_range.start();
                 let mut lastkey = *settings.scene.key_range.end();
                 ui.horizontal(|ui| {
@@ -79,7 +99,7 @@ impl SettingsWindow {
                     settings.scene.key_range = firstkey..=lastkey;
                 }
 
-                ui.label("Note Speed: ");
+                ui.label(state.i18n.t("visual.note_speed"));
                 ui.spacing_mut().slider_width = width / 2.0 - 100.0;
                 ui.add(
                     egui::Slider::new(&mut settings.scene.note_speed, NOTE_SPEED_RANGE)
@@ -89,7 +109,7 @@ impl SettingsWindow {
             });
 
         ui.add_space(super::CATEG_SPACE);
-        ui.heading("Statistics");
+        ui.heading(state.i18n.t("visual.statistics"));
 
         egui::Grid::new("stats_visual_settings_grid")
             .num_columns(2)
@@ -97,15 +117,19 @@ impl SettingsWindow {
             .striped(true)
             .min_col_width(width / 2.0)
             .show(ui, |ui| {
-                ui.label("Floating:");
+                ui.label(state.i18n.t("visual.show_hud"));
+                ui.checkbox(&mut state.stats_visible, "");
+                ui.end_row();
+
+                ui.label(state.i18n.t("visual.floating"));
                 ui.checkbox(&mut settings.scene.statistics.floating, "");
                 ui.end_row();
 
-                ui.label("Border:");
+                ui.label(state.i18n.t("visual.border"));
                 ui.checkbox(&mut settings.scene.statistics.border, "");
                 ui.end_row();
 
-                ui.label("Background Opacity: ");
+                ui.label(state.i18n.t("visual.opacity"));
                 ui.spacing_mut().slider_width = width / 2.0 - 100.0;
                 ui.add(egui::Slider::new(
                     &mut settings.scene.statistics.opacity,
@@ -140,7 +164,7 @@ impl SettingsWindow {
                                     });
                                 });
                                 row.col(|ui| {
-                                    ui.label(item.0.as_str());
+                                    ui.label(state.i18n.stat_name(item.0));
                                 });
                                 row.col(|ui| {
                                     ui.horizontal(|ui| {

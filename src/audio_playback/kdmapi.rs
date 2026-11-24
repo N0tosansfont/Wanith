@@ -1,46 +1,53 @@
-use crate::settings::{KdmapiSettings, WasabiSettings};
-use std::io::Write;
+//! Direct in-process real-time `kdmapiv3` player for Wasabi preview playback.
+//!
+//! # Real-Time Guarantees
+//! - No external DLL loading (`kdmapi-rs` removed), no C FFI overhead, no temporary
+//!   `.csflist` file I/O on disk.
+//! - Playback threads clone [`DirectMidiSender`] and push stack-batched MIDI messages
+//!   directly into `kdmapiv3`'s pre-allocated lock-free ring buffer with zero locks
+//!   and zero heap allocations.
 
-use crate::{gui::window::WasabiError, utils};
+use std::sync::Arc;
 
-use super::*;
-use kdmapi_rs::{KDMAPIStream, KDMAPI};
+use kdmapiv3::{DirectKdmapiEngine, DirectMidiSender};
+
+use crate::engine_core::{build_synth_config, collect_enabled_soundfont_paths};
+use crate::gui::window::{GuiMessageSystem, WasabiError};
+use crate::settings::{KdmapiSettings, WasabiSoundfont};
 
 pub struct KdmapiPlayer {
-    stream: KDMAPIStream,
-    use_om_list: bool,
+    engine: DirectKdmapiEngine,
+    sender: DirectMidiSender,
 }
 
 impl KdmapiPlayer {
-    pub fn new() -> Result<Self, WasabiError> {
-        let kdmapi = KDMAPI
-            .as_ref()
-            .map_err(|e| WasabiError::SynthError(format!("Failed to load KDMAPI: {e}")))?;
-
-        let stream = kdmapi
-            .open_stream()
-            .map_err(|e| WasabiError::SynthError(format!("Failed to load KDMAPI: {e}")))?;
-
-        Ok(Self {
-            stream,
-            use_om_list: false,
-        })
+    pub fn new(
+        settings: &KdmapiSettings,
+        soundfonts: &[WasabiSoundfont],
+    ) -> Result<Self, WasabiError> {
+        let synth_cfg = build_synth_config(settings);
+        let sf_paths = collect_enabled_soundfont_paths(soundfonts);
+        let engine = DirectKdmapiEngine::start(synth_cfg, settings.ring_buffer_capacity, &sf_paths)
+            .map_err(|e| {
+                WasabiError::SynthError(format!("Failed to start built-in KDMAPI v3 engine: {e}"))
+            })?;
+        let sender = engine.sender();
+        Ok(Self { engine, sender })
     }
 
-    pub fn reset(&mut self) {
-        let reset = utils::create_reset_midi_messages();
-        self.push_events(reset.into_iter());
-        self.stream.reset();
+    #[inline]
+    pub fn sender(&self) -> DirectMidiSender {
+        self.sender.clone()
     }
 
-    pub fn push_events(&mut self, data: impl Iterator<Item = u32>) {
-        for ev in data {
-            self.stream.send_direct_data(ev);
-        }
+    #[inline]
+    pub fn reset(&self) {
+        self.sender.reset();
     }
 
-    pub fn configure(&mut self, settings: &KdmapiSettings) {
-        self.use_om_list = settings.use_om_sflist;
+    #[inline]
+    pub fn push_events(&self, data: impl Iterator<Item = u32>) {
+        self.sender.push_short_iter(data);
     }
 
     pub fn set_soundfonts(
@@ -48,34 +55,17 @@ impl KdmapiPlayer {
         soundfonts: &[WasabiSoundfont],
         errors: Arc<GuiMessageSystem>,
     ) {
-        if !self.use_om_list {
-            let list = utils::create_om_sf_list(soundfonts);
-
-            let mut path = WasabiSettings::get_config_dir();
-            path.push("wasabi-sflist.csflist");
-
-            if let Ok(mut file) = std::fs::File::create(&path) {
-                file.write_all(list.as_bytes()).unwrap_or_else(|e| {
-                    errors.warning(format!(
-                        "Failed to create SoundFont list for OmniMIDI: {}",
-                        e
-                    ))
-                });
-            }
-
-            if let Some(false) = self
-                .stream
-                .load_custom_soundfonts_list(path.to_str().unwrap_or_default())
-            {
-                let error = WasabiError::SynthError(
-                    "Failed to load custom SoundFont list in OmniMIDI.".into(),
-                );
-                errors.error(&error);
-            }
+        let sf_paths = collect_enabled_soundfont_paths(soundfonts);
+        if let Err(e) = self.engine.load_soundfonts(&sf_paths) {
+            let error = WasabiError::SynthError(format!(
+                "Failed to load SoundFonts into KDMAPI v3: {e}"
+            ));
+            errors.error(&error);
         }
     }
 
-    pub fn voice_count(&self) -> Option<u64> {
-        self.stream.get_voice_count()
+    #[inline]
+    pub fn voice_count(&self) -> u64 {
+        self.sender.voice_count()
     }
 }

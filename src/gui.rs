@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use egui_winit_vulkano::Gui;
-use vulkano::device::{Device, Queue};
+use vulkano::{
+    device::{Device, Queue},
+    sync::GpuFuture,
+};
 
 use crate::renderer::swapchain::SwapchainFrame;
 
@@ -18,4 +21,7 @@ pub struct GuiRenderer<'a> {
     pub device: Arc<Device>,
     pub queue: Arc<Queue>,
     pub format: vulkano::format::Format,
+    /// Optional scene GPU future chained directly into `gui.draw_on_image` so scene
+    /// rendering overlaps with UI submission without mid-frame `vkWaitForFences` stalls.
+    pub scene_future: Option<Box<dyn GpuFuture>>,
 }

@@ -74,6 +74,7 @@ impl GuiRenderScene {
         key_view: &KeyboardView,
         midi_file: &mut MIDIFileUnion,
         view_range: f64,
+        skin: crate::settings::SkinPreset,
     ) -> RenderResultData {
         let size = ui.available_size();
         let size = [size.x as u32, size.y as u32];
@@ -82,20 +83,38 @@ impl GuiRenderScene {
         let frame = scene_image.image.clone();
 
         let result = match midi_file {
-            MIDIFileUnion::InRam(file) => self
-                .draw_system
-                .get_note_renderer(state.renderer)
-                .draw(key_view, frame, file, view_range),
+            MIDIFileUnion::InRam(file) => {
+                let (res, future) = self
+                    .draw_system
+                    .get_note_renderer(state.renderer)
+                    .draw(key_view, frame, file, view_range, skin);
+                if let Some(f) = future {
+                    state.renderer.scene_future = Some(f);
+                }
+                res
+            }
 
-            MIDIFileUnion::Live(file) => self
-                .draw_system
-                .get_note_renderer(state.renderer)
-                .draw(key_view, frame, file, view_range),
+            MIDIFileUnion::Live(file) => {
+                let (res, future) = self
+                    .draw_system
+                    .get_note_renderer(state.renderer)
+                    .draw(key_view, frame, file, view_range, skin);
+                if let Some(f) = future {
+                    state.renderer.scene_future = Some(f);
+                }
+                res
+            }
 
-            MIDIFileUnion::Cake(file) => self
-                .draw_system
-                .get_cake_renderer(state.renderer)
-                .draw(key_view, frame, file, view_range),
+            MIDIFileUnion::Cake(file) => {
+                let (res, future) = self
+                    .draw_system
+                    .get_cake_renderer(state.renderer)
+                    .draw(key_view, frame, file, view_range, skin);
+                if let Some(f) = future {
+                    state.renderer.scene_future = Some(f);
+                }
+                res
+            }
         };
 
         let img = Image::new((scene_image.id, [size[0] as f32, size[1] as f32].into()));

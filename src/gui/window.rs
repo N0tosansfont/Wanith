@@ -1,6 +1,6 @@
 pub mod fps;
 mod keyboard;
-mod keyboard_layout;
+pub mod keyboard_layout;
 mod scene;
 mod stats;
 
@@ -19,6 +19,7 @@ use std::thread;
 use egui::FontFamily::{Monospace, Proportional};
 use egui::FontId;
 use egui::Frame;
+use kdmapiv3::DirectMidiSender;
 pub use loading::*;
 use settings::SettingsWindow;
 use time::Duration;
@@ -42,10 +43,13 @@ pub struct GuiWasabiWindow {
     midi_file: Option<MIDIFileUnion>,
     fps: fps::Fps,
     nps: stats::NpsCounter,
+    peak_voices: u64,
 
     settings_win: SettingsWindow,
     midi_picker: Option<Receiver<PathBuf>>,
     midi_loader: Option<Receiver<MIDIFileUnion>>,
+    /// Generation-tagged cached lock-free handle to `kdmapi v3` for zero-lock HUD polling.
+    cached_direct_sender: Option<(u64, Option<DirectMidiSender>)>,
 }
 
 impl GuiWasabiWindow {
@@ -77,10 +81,12 @@ impl GuiWasabiWindow {
             midi_file: None,
             fps: fps::Fps::new(),
             nps: Default::default(),
+            peak_voices: 0,
 
             settings_win,
             midi_picker: None,
             midi_loader: None,
+            cached_direct_sender: None,
         }
     }
 
@@ -108,6 +114,21 @@ impl GuiWasabiWindow {
             .get_mut(&egui::FontFamily::Monospace)
             .unwrap()
             .insert(0, "ubuntu".to_owned());
+
+        // Cold-path one-time Korean fallback font loader (local assets override -> OS system font)
+        if let Some(kr_font) = Self::load_korean_fallback_font() {
+            fonts.font_data.insert("kr_fallback".to_owned(), kr_font.into());
+            fonts
+                .families
+                .get_mut(&egui::FontFamily::Proportional)
+                .unwrap()
+                .push("kr_fallback".to_owned());
+            fonts
+                .families
+                .get_mut(&egui::FontFamily::Monospace)
+                .unwrap()
+                .push("kr_fallback".to_owned());
+        }
 
         ctx.set_fonts(fonts);
 
@@ -142,6 +163,73 @@ impl GuiWasabiWindow {
         ctx.set_style(style);
     }
 
+    /// Load a Korean fallback font once during startup (`assets/` local override first,
+    /// then OS-installed CJK/Korean system font) so Korean UI and Korean MIDI filenames
+    /// render cleanly without bloating the binary or touching any hot path.
+    fn load_korean_fallback_font() -> Option<egui::FontData> {
+        let mut candidates: Vec<(PathBuf, u32)> = Vec::new();
+
+        // 1. Local/bundled override (`assets/Pretendard-Medium.ttf`, etc.) next to exe or CWD
+        let local_names = [
+            "Pretendard-Medium.ttf",
+            "Pretendard-Regular.ttf",
+            "NotoSansKR-Regular.ttf",
+            "NanumGothic.ttf",
+        ];
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                for name in local_names {
+                    candidates.push((dir.join("assets").join(name), 0));
+                }
+            }
+        }
+        for name in local_names {
+            candidates.push((PathBuf::from("assets").join(name), 0));
+        }
+
+        // 2. OS system Korean font fallbacks
+        #[cfg(target_os = "linux")]
+        {
+            // In NotoSansCJK-Regular.ttc, face index 1 is `Noto Sans CJK KR`
+            candidates.push((
+                PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+                1,
+            ));
+            candidates.push((
+                PathBuf::from("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc"),
+                1,
+            ));
+            candidates.push((
+                PathBuf::from("/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
+                0,
+            ));
+            candidates.push((
+                PathBuf::from("/usr/share/fonts/truetype/noto/NotoSansKR-Regular.ttf"),
+                0,
+            ));
+        }
+        #[cfg(target_os = "windows")]
+        {
+            candidates.push((PathBuf::from(r"C:\Windows\Fonts\Pretendard-Medium.ttf"), 0));
+            candidates.push((PathBuf::from(r"C:\Windows\Fonts\malgun.ttf"), 0));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            candidates.push((PathBuf::from("/System/Library/Fonts/AppleSDGothicNeo.ttc"), 0));
+        }
+
+        for (path, face_index) in candidates {
+            if path.is_file() {
+                if let Ok(bytes) = std::fs::read(&path) {
+                    let mut font = egui::FontData::from_owned(bytes);
+                    font.index = face_index;
+                    return Some(font);
+                }
+            }
+        }
+        None
+    }
+
     /// Defines the layout of our UI
     pub fn layout(
         &mut self,
@@ -164,9 +252,12 @@ impl GuiWasabiWindow {
         // Check for MIDIs parsed by the MIDI loader and play
         if let Some(recv) = self.midi_loader.as_mut() {
             if let Ok(mut midi) = recv.try_recv() {
+                state.active_midi_path = Some(midi.signature().filepath.clone());
+                state.active_midi_length_sec = midi.midi_length();
                 midi.timer_mut().play();
                 self.midi_file = Some(midi);
                 self.midi_loader = None;
+                self.reset_peak_stats();
             }
         }
 
@@ -217,6 +308,7 @@ impl GuiWasabiWindow {
                     }
                     if key == &egui::Key::Insert {
                         state.synth.reset();
+                        self.reset_peak_stats();
                     }
                 }
             }
@@ -264,7 +356,8 @@ impl GuiWasabiWindow {
 
                                     match key {
                                         egui::Key::ArrowRight => {
-                                            midi_file.timer_mut().seek(time + skip_dur)
+                                            midi_file.timer_mut().seek(time + skip_dur);
+                                            self.nps.clear_window();
                                         }
                                         egui::Key::ArrowLeft => {
                                             if midi_file.allows_seeking_backward() {
@@ -306,6 +399,7 @@ impl GuiWasabiWindow {
                         &key_view,
                         midi_file,
                         settings.scene.note_speed,
+                        settings.scene.skin,
                     );
                     stats.set_rendered_note_count(result.notes_rendered);
                     stats.set_polyphony(result.polyphony);
@@ -325,14 +419,39 @@ impl GuiWasabiWindow {
                     vec![None; 256]
                 };
 
-                self.keyboard
-                    .draw(ui, &key_view, &colors, &settings.scene.bar_color);
+                self.keyboard.draw(
+                    ui,
+                    &key_view,
+                    &colors,
+                    &settings.scene.bar_color,
+                    settings.scene.skin,
+                );
             });
 
-        // Render the stats
+        // Render the lock-free Legit Run HUD telemetry overlay
         if state.stats_visible {
-            let voice_count = state.synth.voice_count();
-            stats.set_voice_count(voice_count);
+            let current_gen = state.synth.generation();
+            let needs_refresh = match self.cached_direct_sender {
+                Some((gen, _)) => gen != current_gen,
+                None => true,
+            };
+            if needs_refresh {
+                self.cached_direct_sender = Some(state.synth.clone_direct_sender());
+            }
+
+            if let Some(sender) = self
+                .cached_direct_sender
+                .as_ref()
+                .and_then(|(_, s)| s.as_ref())
+            {
+                let telem = sender.telemetry_snapshot();
+                stats.set_xrun_count(Some(telem.xrun_count));
+                stats.set_voice_count(Some(sender.voice_count()));
+                stats.set_audio_dsp_pct(Some(sender.rendering_time_pct()));
+            } else {
+                stats.set_voice_count(state.synth.voice_count());
+            }
+            stats.set_system_metrics(state.system_monitor.snapshot());
 
             let pad = if settings.scene.statistics.floating {
                 12.0
@@ -340,7 +459,7 @@ impl GuiWasabiWindow {
                 0.0
             };
             let pos = egui::Pos2::new(pad, panel_height + pad);
-            self.draw_stats(&ctx, pos, stats, settings);
+            self.draw_stats(&ctx, pos, stats, settings, &state.i18n);
         }
 
         // Render errors
@@ -374,12 +493,20 @@ impl GuiWasabiWindow {
         });
     }
 
+    pub(super) fn reset_peak_stats(&mut self) {
+        self.nps.reset();
+        self.peak_voices = 0;
+    }
+
     pub fn load_midi(
         &mut self,
         midi_path: PathBuf,
         settings: &mut WasabiSettings,
-        state: &WasabiState,
+        state: &mut WasabiState,
     ) {
+        state.active_midi_path = Some(midi_path.clone());
+        state.active_midi_length_sec = None;
+
         // Unload current MIDI to free resources while loading the new one
         if let Some(mut midi_file) = self.midi_file.take() {
             midi_file.timer_mut().pause();

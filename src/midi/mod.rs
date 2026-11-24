@@ -1,5 +1,6 @@
 #[allow(dead_code)]
 mod cake;
+pub mod double_buffer;
 #[allow(dead_code)]
 mod live;
 #[allow(dead_code)]
@@ -16,7 +17,7 @@ use palette::{convert::FromColorUnclamped, Hsv, Srgb};
 use rand::seq::IteratorRandom;
 use rand::Rng;
 
-pub use cake::{blocks::CakeBlock, intvec4::IntVector4, CakeMIDIFile, CakeSignature};
+pub use cake::{blocks::CakeBlock, intvec4::IntVector4, CakeMIDIFile};
 pub use live::LiveLoadMIDIFile;
 pub use ram::InRamMIDIFile;
 

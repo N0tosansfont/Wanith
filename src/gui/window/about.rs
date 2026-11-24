@@ -1,162 +1,176 @@
-use crate::{state::WasabiState, utils};
 use std::env::consts::{ARCH, OS};
 
+use egui::{Color32, RichText};
+
+use crate::{state::WasabiState, utils};
+
 use super::{GuiWasabiWindow, WasabiError};
+
+/// Verbatim dedication statement for Black MIDI engine pioneers.
+const DEDICATION_QUOTE: &str = "We deeply respect and love the creators of the legendary engines and pioneers who gifted the world the playground of Black MIDI. Thank you.";
+
+/// Verbatim Special Thanks roster.
+const SPECIAL_THANKS: [&str; 8] = [
+    "Synthesia — Nicholas Piegdon & Contributors",
+    "Piano From Above (PFA) — Brian Pantano & Contributors",
+    "Zenith — Arduano (Dorian) & Contributors",
+    "Wasabi — BlackMIDIDevs & Contributors",
+    "XSynth — BlackMIDIDevs (Arduano, etc.) & Contributors",
+    "KDMAPI / OmniMIDI — Keppy (KaleidonKep99) & Contributors (Real Legend of Legend)",
+    "BusiedGem — Synthesia Black MIDI Creator",
+    "Carlos S.M. — Famous PFA Black MIDI Creator",
+];
 
 impl GuiWasabiWindow {
     pub fn show_about(&mut self, ctx: &egui::Context, state: &mut WasabiState) {
         let frame = utils::create_window_frame(ctx);
-        let size = [600.0, 460.0];
+        let size = [660.0, 560.0];
 
         let mut updcheck = false;
+        let window_title = state.i18n.t("about.window_title").to_owned();
 
-        egui::Window::new("About Wasabi")
+        egui::Window::new(window_title)
+            .id(egui::Id::new("wanith_about_credits_window"))
             .resizable(true)
             .collapsible(false)
             .title_bar(true)
             .scroll([false, true])
             .enabled(true)
             .frame(frame)
-            .fixed_size(size)
+            .default_size(size)
+            .min_size([560.0, 440.0])
             .open(&mut state.show_about)
             .show(ctx, |ui| {
+                let i18n = &state.i18n;
+
+                // Header / Branding
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    let image_size = 84.0;
-
-                    let title_size = 40.0;
-                    let titleid = egui::FontId {
-                        size: title_size,
-                        ..Default::default()
-                    };
-
-                    let title_text = "Wasabi";
-                    let title_galley = ui.painter().layout_no_wrap(
-                        title_text.to_owned(),
-                        titleid,
-                        egui::Color32::WHITE,
-                    );
-
-                    let logo_width =
-                        image_size + ui.spacing().item_spacing.x + title_galley.size().x;
-                    let space = ui.available_width() / 2.0 - (logo_width + 4.0) / 2.0;
-
-                    ui.add_space(space);
+                    let image_size = 72.0;
                     ui.add(
                         egui::Image::new(egui::include_image!("../../../assets/logo.svg"))
                             .fit_to_exact_size(egui::Vec2::new(image_size, image_size)),
                     );
-                    ui.add_space(4.0);
-
+                    ui.add_space(10.0);
                     ui.vertical(|ui| {
-                        let text_height = title_galley.size().y;
-                        let space = (image_size - text_height) / 2.0;
-                        ui.add_space(space);
-
-                        ui.label(egui::RichText::new(title_text).size(title_size));
-                    })
+                        ui.label(
+                            RichText::new("Wanith")
+                                .size(34.0)
+                                .strong()
+                                .color(Color32::WHITE),
+                        );
+                        ui.label(
+                            RichText::new(i18n.t("about.subtitle"))
+                                .color(Color32::from_rgb(180, 180, 180)),
+                        );
+                    });
                 });
 
-                ui.add_space(10.0);
+                ui.add_space(8.0);
                 ui.separator();
-                ui.add_space(10.0);
+                ui.add_space(8.0);
 
-                let col_width = size[0] / 2.0;
-                ui.heading("Build Information");
+                // Dedication Quote (verbatim)
+                ui.heading(i18n.t("about.dedication_heading"));
+                ui.add_space(4.0);
+                egui::Frame::default()
+                    .inner_margin(egui::Margin::same(10))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .fill(Color32::from_rgb(28, 28, 32))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(65, 65, 78)))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(format!("\"{DEDICATION_QUOTE}\""))
+                                .italics()
+                                .color(Color32::from_rgb(235, 235, 240)),
+                        );
+                    });
+
+                ui.add_space(12.0);
+
+                // Special Thanks (verbatim 8 entries)
+                ui.heading(i18n.t("about.special_thanks_heading"));
+                ui.add_space(4.0);
+                egui::Frame::default()
+                    .inner_margin(egui::Margin::same(10))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .fill(Color32::from_rgb(24, 24, 26))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(52, 52, 58)))
+                    .show(ui, |ui| {
+                        for entry in SPECIAL_THANKS {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("•").color(Color32::from_rgb(120, 200, 255)),
+                                );
+                                ui.label(entry);
+                            });
+                        }
+                    });
+
+                ui.add_space(12.0);
+
+                // Build & Engine Info
+                let col_width = (ui.available_width() / 2.0).max(180.0);
+                ui.heading(i18n.t("about.build_heading"));
+                ui.add_space(4.0);
                 egui::Grid::new("buildinfo_grid")
                     .num_columns(2)
                     .min_col_width(col_width)
                     .striped(true)
                     .show(ui, |ui| {
-                        ui.label("Version:");
-                        ui.label(env!("CARGO_PKG_VERSION"));
+                        ui.label(i18n.t("about.version"));
+                        ui.monospace(env!("CARGO_PKG_VERSION"));
                         ui.end_row();
 
-                        ui.label("Operating System:");
-                        ui.label(OS.to_string());
+                        ui.label(i18n.t("about.os"));
+                        ui.monospace(OS);
                         ui.end_row();
 
-                        ui.label("Architecture:");
-                        ui.label(ARCH.to_string());
+                        ui.label(i18n.t("about.arch"));
+                        ui.monospace(format!("{ARCH} (64-bit)"));
+                        ui.end_row();
+
+                        ui.label(i18n.t("about.audio_engine"));
+                        ui.monospace("KDMAPI v3 (In-Process Lock-Free)");
+                        ui.end_row();
+
+                        ui.label(i18n.t("about.video_engine"));
+                        ui.monospace("Native Vulkan Video (H.264/H.265) + AAC MP4");
                         ui.end_row();
                     });
 
-                ui.add_space(20.0);
+                ui.add_space(12.0);
 
-                ui.heading("Libraries");
-                egui::Grid::new("libraries_grid")
-                    .num_columns(2)
-                    .min_col_width(col_width)
-                    .striped(true)
+                // GNU GPLv3 Appropriate Legal Notices
+                ui.heading(i18n.t("about.license_heading"));
+                ui.add_space(4.0);
+                egui::Frame::default()
+                    .inner_margin(egui::Margin::same(10))
+                    .corner_radius(egui::CornerRadius::same(6))
+                    .fill(Color32::from_rgb(22, 22, 24))
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(55, 55, 55)))
                     .show(ui, |ui| {
-                        ui.label("Vulkano Version:");
-                        ui.label("0.35");
-                        ui.end_row();
-
-                        ui.label("Egui Version:");
-                        ui.label("0.31");
-                        ui.end_row();
-
-                        ui.label("Winit Version:");
-                        ui.label("0.30");
-                        ui.end_row();
-
-                        ui.label("XSynth Version:");
-                        ui.label("0.3.4");
-                        ui.end_row();
-
-                        ui.label("MIDI Toolkit Version:");
-                        ui.label("0.1.0");
-                        ui.end_row();
+                        ui.label(
+                            RichText::new(i18n.t("about.license_body"))
+                                .small()
+                                .color(Color32::from_rgb(195, 195, 200)),
+                        );
                     });
 
-                let gh_text = "\u{1F310} GitHub";
-                let gh_galley = ui.painter().layout_no_wrap(
-                    gh_text.to_owned(),
-                    ctx.style()
-                        .text_styles
-                        .iter()
-                        .find(|v| v.0 == &egui::TextStyle::Button)
-                        .unwrap()
-                        .1
-                        .clone(),
-                    egui::Color32::WHITE,
-                );
-
-                let upd_text = "\u{1F310} Check for updates";
-                let upd_galley = ui.painter().layout_no_wrap(
-                    upd_text.to_owned(),
-                    ctx.style()
-                        .text_styles
-                        .iter()
-                        .find(|v| v.0 == &egui::TextStyle::Button)
-                        .unwrap()
-                        .1
-                        .clone(),
-                    egui::Color32::WHITE,
-                );
-
-                let mut h = ui.available_height();
-
-                let button_height = ui.spacing().button_padding.y * 2.0 + gh_galley.size().y;
-                h -= button_height;
-                ui.add_space(h);
-
+                ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    let w = ui.available_width();
-
-                    let button_width = gh_galley.size().x
-                        + upd_galley.size().x
-                        + ui.spacing().button_padding.x * 4.0;
-                    let w = w / 2.0 - button_width / 2.0;
-                    ui.add_space(w);
-
-                    if ui.button(gh_text).clicked() {
-                        open::that("https://github.com/BlackMIDIDevs/wasabi").unwrap_or_else(|e| {
+                    if ui
+                        .button(format!("\u{1F310} {}", i18n.t("about.github")))
+                        .clicked()
+                    {
+                        open::that("https://github.com/N0tosansfont/Wanith").unwrap_or_else(|e| {
                             state.errors.error(&WasabiError::Other(e.to_string()))
                         });
                     }
-                    if ui.button(upd_text).clicked() {
+                    if ui
+                        .button(format!("\u{1F310} {}", i18n.t("about.check_updates")))
+                        .clicked()
+                    {
                         updcheck = true;
                     }
                 });

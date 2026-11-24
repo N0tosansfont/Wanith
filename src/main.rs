@@ -4,12 +4,16 @@
 
 mod app;
 mod audio_playback;
+mod engine_core;
 mod gui;
+mod i18n;
 mod midi;
+mod offline_render;
 mod renderer;
 mod scenes;
 mod settings;
 mod state;
+mod system_monitor;
 mod utils;
 
 use app::WasabiApplication;

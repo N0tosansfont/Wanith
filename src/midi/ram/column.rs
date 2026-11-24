@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use super::block::InRamNoteBlock;
+use super::block::FlatNoteColumn;
 
 pub struct InRamNoteColumnViewData {
     /// Number of notes from the beginning of the midi to the start of the render view
@@ -30,13 +30,14 @@ impl InRamNoteColumnViewData {
 
 pub struct InRamNoteColumn {
     pub data: InRamNoteColumnViewData,
-    pub blocks: Vec<InRamNoteBlock>,
+    pub flat: FlatNoteColumn,
 }
 
 impl InRamNoteColumn {
-    pub fn new(blocks: Vec<InRamNoteBlock>) -> Self {
+    pub fn new(mut flat: FlatNoteColumn) -> Self {
+        flat.shrink_to_fit();
         InRamNoteColumn {
-            blocks,
+            flat,
             data: InRamNoteColumnViewData::new(),
         }
     }

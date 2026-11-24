@@ -18,45 +18,43 @@ use crate::{
         audio::ram::InRamAudioPlayer,
         open_file_and_signature,
         ram::{column::InRamNoteColumn, view::InRamNoteViewData},
-        shared::{audio::CompressedAudio, timer::TimeKeeper, track_channel::TrackAndChannel},
+        shared::{audio::FlatAudioTimeline, timer::TimeKeeper, track_channel::TrackAndChannel},
         MIDIColor,
     },
     settings::MidiSettings,
 };
 
-use super::{block::InRamNoteBlock, InRamMIDIFile};
+use super::{block::FlatNoteColumn, InRamMIDIFile};
 
 struct UnendedNote {
-    column_index: usize,
     block_index: usize,
+    note_index: usize,
 }
 
 struct Key {
-    column: Vec<InRamNoteBlock>,
-    block_builder: Vec<TrackAndChannel>,
+    flat: FlatNoteColumn,
     unended_notes: FxHashMap<TrackAndChannel, VecDeque<UnendedNote>>,
 }
 
 impl Key {
     fn new() -> Self {
         Key {
-            column: Vec::new(),
-            block_builder: Vec::new(),
+            flat: FlatNoteColumn::new(),
             unended_notes: FxHashMap::default(),
         }
     }
 
+    #[inline]
     fn add_note(&mut self, track_chan: TrackAndChannel) {
-        let block_index = self.block_builder.len();
-        let column_index = self.column.len();
-        self.block_builder.push(track_chan);
+        let (block_index, note_index) = self.flat.push_unflushed_note(track_chan);
         let unended_queue = self.unended_notes.entry(track_chan).or_default();
         unended_queue.push_back(UnendedNote {
-            column_index,
             block_index,
+            note_index,
         });
     }
 
+    #[inline]
     pub fn end_note(&mut self, track_chan: TrackAndChannel, time: f64) {
         let note = self
             .unended_notes
@@ -64,31 +62,21 @@ impl Key {
             .and_then(|unended_queue| unended_queue.pop_front());
 
         if let Some(note) = note {
-            if note.column_index == self.column.len() {
-                // Note is zero length
-                // We don't need to remove it, because when it gets added,
-                // the length defaults to zero.
-            } else {
-                let block = &mut self.column[note.column_index];
-                if note.block_index >= block.notes.len() {
-                    dbg!(note.block_index, block.notes.len());
-                }
-                block.set_note_end_time(note.block_index, time);
-            }
+            self.flat
+                .set_note_end_time(note.block_index, note.note_index, time);
         }
     }
 
+    #[inline]
     pub fn flush(&mut self, time: f64) {
-        if !self.block_builder.is_empty() {
-            let block = InRamNoteBlock::new_from_trackchans(time, self.block_builder.drain(..));
-            self.column.push(block);
-        }
+        self.flat.flush_block(time);
     }
 
     pub fn end_all(&mut self, time: f64) {
         for (_, mut queue) in self.unended_notes.drain() {
             for note in queue.drain(..) {
-                self.column[note.column_index].set_note_end_time(note.block_index, time);
+                self.flat
+                    .set_note_end_time(note.block_index, note.note_index, time);
             }
         }
     }
@@ -162,8 +150,7 @@ impl InRamMIDIFile {
         });
 
         let audio_join_handle = thread::spawn(|| {
-            let vec: Vec<_> = CompressedAudio::build_blocks(audio_rcv.into_iter()).collect();
-            vec
+            FlatAudioTimeline::build_from_iter(audio_rcv.into_iter())
         });
 
         let mut length = 0.0;
@@ -188,7 +175,7 @@ impl InRamMIDIFile {
 
         let columns = keys
             .into_iter()
-            .map(|key| InRamNoteColumn::new(key.column))
+            .map(|key| InRamNoteColumn::new(key.flat))
             .collect();
 
         let colors = MIDIColor::new_vec_from_settings(midi.track_count(), settings)?;

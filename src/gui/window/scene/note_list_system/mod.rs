@@ -3,7 +3,7 @@ mod notes_render_pass;
 use std::{cell::UnsafeCell, sync::Arc};
 
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
-use vulkano::image::view::ImageView;
+use vulkano::{image::view::ImageView, sync::GpuFuture};
 
 use crate::{
     gui::{window::keyboard_layout::KeyboardView, GuiRenderer},
@@ -15,7 +15,7 @@ use self::notes_render_pass::{NotePassStatus, NoteRenderPass, NoteVertex};
 
 use super::RenderResultData;
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct ColumnReturnData {
     polyphony: usize,
     written_notes: usize,
@@ -23,7 +23,7 @@ struct ColumnReturnData {
 
 pub struct NoteRenderer {
     render_pass: NoteRenderPass,
-    thrad_pool: rayon::ThreadPool,
+    thread_pool: rayon::ThreadPool,
 }
 
 struct UnsafeSyncCell<T>(UnsafeCell<T>);
@@ -46,7 +46,7 @@ impl NoteRenderer {
     pub fn new(renderer: &GuiRenderer) -> NoteRenderer {
         NoteRenderer {
             render_pass: NoteRenderPass::new(renderer),
-            thrad_pool: rayon::ThreadPoolBuilder::new().build().unwrap(),
+            thread_pool: rayon::ThreadPoolBuilder::new().build().unwrap(),
         }
     }
 
@@ -56,7 +56,8 @@ impl NoteRenderer {
         final_image: Arc<ImageView>,
         midi_file: &mut impl MIDIFile,
         view_range: f64,
-    ) -> RenderResultData {
+        skin: crate::settings::SkinPreset,
+    ) -> (RenderResultData, Option<Box<dyn GpuFuture>>) {
         let note_views = midi_file.get_current_column_views(view_range);
 
         struct ColumnViewInfo<Iter: ExactSizeIterator<Item = DisplacedMIDINote> + Send> {
@@ -70,9 +71,9 @@ impl NoteRenderer {
 
         let mut total_notes = 0;
 
-        let columns: Vec<_> = (0..256).map(|i| note_views.get_column(i)).collect();
+        let columns: [_; 256] = std::array::from_fn(|i| note_views.get_column(i));
 
-        let mut columns_view_info = Vec::new();
+        let mut columns_view_info = Vec::with_capacity(256);
 
         let border_width = utils::calculate_border_width(
             final_image.image().extent()[0] as f32,
@@ -116,106 +117,102 @@ impl NoteRenderer {
         let mut notes_pushed = 0;
         let mut polyphony = 0;
 
-        let mut cycle = 0;
-
         let view_range = note_views.range().length() as f32;
 
-        self.render_pass
-            .draw(final_image, key_view, view_range, |buffer| {
-                let buffer_length = buffer.len() as usize;
+        let out_future =
+            self.render_pass
+                .draw(final_image, key_view, view_range, skin.id(), |buffer| {
+                    let buffer_length = buffer.len() as usize;
 
-                let buffer_writer = UnsafeSyncCell::new(buffer.write().unwrap());
+                    let buffer_writer = UnsafeSyncCell::new(buffer.write().unwrap());
 
-                // A system to write multiple note columns into 1 large allocated array in parallel
-                let column_data = self.thrad_pool.install(|| {
-                    // For each note column, write it into the buffer
-                    let out_data = columns_view_info.par_iter_mut().rev().map(|column| {
-                        if column.remaining == 0 {
-                            return Default::default();
-                        }
+                    // Parallel write of all 256 columns into the active A/B staging buffer
+                    // using zero-allocation rayon reduce (no intermediate Vec collect).
+                    let column_data = self.thread_pool.install(|| {
+                        columns_view_info
+                            .par_iter_mut()
+                            .rev()
+                            .map(|column| {
+                                if column.remaining == 0 {
+                                    return ColumnReturnData::default();
+                                }
 
-                        let offset = (column.offset as i64 - notes_pushed as i64).max(0) as usize;
+                                let offset =
+                                    (column.offset as i64 - notes_pushed as i64).max(0) as usize;
 
-                        if offset >= buffer_length {
-                            return Default::default();
-                        }
+                                if offset >= buffer_length {
+                                    return ColumnReturnData::default();
+                                }
 
-                        let remaining_buffer_space = buffer_length - offset;
-                        let iter_length = column.remaining;
+                                let remaining_buffer_space = buffer_length - offset;
+                                let allowed_to_write =
+                                    column.remaining.min(remaining_buffer_space);
 
-                        let allowed_to_write = if iter_length > remaining_buffer_space {
-                            remaining_buffer_space
-                        } else {
-                            iter_length
-                        };
+                                let mut poly = 0;
 
-                        let mut poly = 0;
+                                unsafe {
+                                    let buffer = buffer_writer.get_mut();
 
-                        unsafe {
-                            let buffer = buffer_writer.get_mut();
+                                    for i in 0..allowed_to_write {
+                                        if let Some(note) = column.iter.next() {
+                                            buffer[i + offset] = NoteVertex::new(
+                                                note.start,
+                                                note.len,
+                                                column.key,
+                                                note.color.as_u32(),
+                                                column.border_width as u32,
+                                            );
 
-                            for i in 0..allowed_to_write {
-                                let next_note = column.iter.next();
-                                if let Some(note) = next_note {
-                                    buffer[i + offset] = NoteVertex::new(
-                                        note.start,
-                                        note.len,
-                                        column.key,
-                                        note.color.as_u32(),
-                                        column.border_width as u32,
-                                    );
-
-                                    if note.start <= 0.0 && note.start + note.len > 0.0 {
-                                        poly += 1;
-                                        if column.color.is_none() {
-                                            column.color = Some(note.color);
+                                            if note.start <= 0.0 && note.start + note.len > 0.0 {
+                                                poly += 1;
+                                                if column.color.is_none() {
+                                                    column.color = Some(note.color);
+                                                }
+                                            }
+                                        } else {
+                                            break;
                                         }
                                     }
-                                } else {
-                                    panic!("Invalid iterator length");
                                 }
-                            }
-                        }
 
-                        column.remaining -= allowed_to_write;
+                                column.remaining -= allowed_to_write;
 
-                        ColumnReturnData {
-                            polyphony: poly,
-                            written_notes: allowed_to_write,
-                        }
+                                ColumnReturnData {
+                                    polyphony: poly,
+                                    written_notes: allowed_to_write,
+                                }
+                            })
+                            .reduce(ColumnReturnData::default, |a, b| ColumnReturnData {
+                                polyphony: a.polyphony + b.polyphony,
+                                written_notes: a.written_notes + b.written_notes,
+                            })
                     });
 
-                    let temp = out_data.collect::<Vec<_>>();
-                    ColumnReturnData {
-                        polyphony: temp.iter().map(|d| d.polyphony).sum::<usize>(),
-                        written_notes: temp.iter().map(|d| d.written_notes).sum::<usize>(),
+                    polyphony += column_data.polyphony;
+                    notes_pushed += column_data.written_notes;
+
+                    if notes_pushed >= total_notes {
+                        NotePassStatus::Finished {
+                            remaining: column_data.written_notes as u32,
+                        }
+                    } else {
+                        NotePassStatus::HasMoreNotes
                     }
                 });
 
-                polyphony += column_data.polyphony;
-                notes_pushed += column_data.written_notes;
-
-                cycle += 1;
-
-                if notes_pushed >= total_notes {
-                    NotePassStatus::Finished {
-                        remaining: column_data.written_notes as u32,
-                    }
-                } else {
-                    NotePassStatus::HasMoreNotes
-                }
-            });
-
-        // Sort for output metrics
-        columns_view_info.sort_unstable_by_key(|k| k.key);
-
-        RenderResultData {
-            notes_rendered: notes_pushed as u64,
-            polyphony: Some(polyphony as u64),
-            key_colors: columns_view_info
-                .iter()
-                .map(|column| column.color)
-                .collect(),
+        // Scatter key colors by key index without sorting the whole view info vector
+        let mut key_colors = vec![None; 256];
+        for column in &columns_view_info {
+            key_colors[column.key as usize] = column.color;
         }
+
+        (
+            RenderResultData {
+                notes_rendered: notes_pushed as u64,
+                polyphony: Some(polyphony as u64),
+                key_colors,
+            },
+            out_future,
+        )
     }
 }

@@ -32,6 +32,12 @@ fn write_icon(s: u32, tree: &Tree, icon_dir: &mut IconDir) {
 }
 
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH").as_deref() != Ok("64") {
+        println!(
+            "cargo:warning=we didn't build this for 32-bit, but if you're stubborn enough to compile it on x86 anyway, we won't stop you :)"
+        );
+    }
+
     let svg = std::fs::read_to_string("assets/logo.svg").unwrap();
     let tree = Tree::from_str(&svg, &Options::default()).unwrap();
 

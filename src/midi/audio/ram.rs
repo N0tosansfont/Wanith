@@ -2,45 +2,66 @@ use std::{
     sync::Arc,
     thread::{self, JoinHandle},
 };
+use kdmapiv3::DirectMidiSender;
 use time::Duration;
 
 use crate::{
     audio_playback::WasabiAudioPlayer,
     midi::shared::{
-        audio::CompressedAudio,
+        audio::FlatAudioTimeline,
         timer::{SeekWaitResult, TimeListener, UnpauseWaitResult, WaitResult},
     },
 };
 
 pub struct InRamAudioPlayer {
-    events: Vec<CompressedAudio>,
+    timeline: FlatAudioTimeline,
     timer: TimeListener,
     player: Arc<WasabiAudioPlayer>,
     index: usize,
+    cached_direct: Option<(u64, Option<DirectMidiSender>)>,
 }
 
 impl InRamAudioPlayer {
     pub fn new(
-        events: Vec<CompressedAudio>,
+        timeline: FlatAudioTimeline,
         timer: TimeListener,
         player: Arc<WasabiAudioPlayer>,
     ) -> Self {
         InRamAudioPlayer {
-            events,
+            timeline,
             timer,
             player,
             index: 0,
+            cached_direct: None,
+        }
+    }
+
+    #[inline]
+    fn direct_sender(&mut self) -> Option<&DirectMidiSender> {
+        let current_gen = self.player.generation();
+        let needs_refresh = match self.cached_direct {
+            Some((gen, _)) => gen != current_gen,
+            None => true,
+        };
+        if needs_refresh {
+            self.cached_direct = Some(self.player.clone_direct_sender());
+        }
+        self.cached_direct.as_ref().and_then(|(_, s)| s.as_ref())
+    }
+
+    #[inline]
+    fn reset_audio(&mut self) {
+        if let Some(sender) = self.direct_sender() {
+            sender.reset();
+        } else {
+            self.player.reset();
         }
     }
 
     pub fn spawn_playback(mut self) -> JoinHandle<()> {
         thread::spawn(move || loop {
-            let reset = || {
-                self.player.reset();
-            };
-
             if self.timer.is_paused() {
-                reset();
+                self.reset_audio();
                 match self.timer.wait_until_unpause() {
                     UnpauseWaitResult::Unpaused => {
                         self.seek_to_time(self.timer.get_time().as_seconds_f64());
@@ -54,7 +75,7 @@ impl InRamAudioPlayer {
                 }
             }
 
-            if self.index >= self.events.len() {
+            if self.index >= self.timeline.len() {
                 match self.timer.wait_until_seeked() {
                     SeekWaitResult::UnpausedAndSeeked(time) => {
                         self.seek_to_time(time.as_seconds_f64());
@@ -64,73 +85,64 @@ impl InRamAudioPlayer {
                 }
             }
 
-            let event = &self.events[self.index];
-
-            let time = Duration::seconds_f64(event.time);
+            let time = Duration::seconds_f64(self.timeline.time_at(self.index));
             match self.timer.wait_until(time) {
                 WaitResult::Ok => {}
                 WaitResult::Paused => {
                     continue;
                 }
                 WaitResult::Seeked(time) => {
-                    reset();
+                    self.reset_audio();
                     self.seek_to_time(time.as_seconds_f64());
                     continue;
                 }
                 WaitResult::Killed => {
-                    reset();
+                    self.reset_audio();
                     break;
                 }
             }
 
-            self.player.push_events(event.iter_events());
+            let idx = self.index;
+            let current_gen = self.player.generation();
+            let needs_refresh = match self.cached_direct {
+                Some((gen, _)) => gen != current_gen,
+                None => true,
+            };
+            if needs_refresh {
+                self.cached_direct = Some(self.player.clone_direct_sender());
+            }
+            if let Some(sender) = self.cached_direct.as_ref().and_then(|(_, s)| s.as_ref()) {
+                self.timeline.for_each_batch_at(idx, |batch| {
+                    sender.push_short_batch(batch);
+                });
+            } else {
+                self.player.push_events(self.timeline.iter_events_at(idx));
+            }
             self.index += 1;
         })
     }
 
-    fn find_time_index(&self, time: f64) -> usize {
-        if time < 0.0 {
-            return 0;
-        }
-
-        let events = &self.events;
-
-        // Binary search to find the right time segment
-
-        let mut size = events.len();
-        let mut left = 0;
-        let mut right = size;
-        while left < right {
-            let mid = left + size / 2;
-
-            let range_start = events
-                .get(mid - 1)
-                .map(|t| t.time)
-                .unwrap_or(f64::NEG_INFINITY);
-            let range_end = events[mid].time;
-
-            if time < range_start {
-                right = mid;
-            } else if time > range_end {
-                left = mid + 1;
-            } else {
-                return mid;
-            }
-
-            size = right - left;
-        }
-
-        events.len()
-    }
-
     fn seek_to_time(&mut self, time: f64) {
-        self.index = self.find_time_index(time);
+        self.index = self.timeline.find_time_index(time);
 
-        // Reset and push all control events before
-        self.player.reset();
-        for i in 0..(self.index) {
+        // Reset and push all control events strictly before the target timestamp via sparse index
+        self.reset_audio();
+        let target = self.index;
+        let current_gen = self.player.generation();
+        let needs_refresh = match self.cached_direct {
+            Some((gen, _)) => gen != current_gen,
+            None => true,
+        };
+        if needs_refresh {
+            self.cached_direct = Some(self.player.clone_direct_sender());
+        }
+        if let Some(sender) = self.cached_direct.as_ref().and_then(|(_, s)| s.as_ref()) {
+            self.timeline.for_each_control_before(target, |batch| {
+                sender.push_short_batch(batch);
+            });
+        } else {
             self.player
-                .push_events(self.events[i].iter_control_events());
+                .push_events(self.timeline.iter_control_before(target));
         }
     }
 }

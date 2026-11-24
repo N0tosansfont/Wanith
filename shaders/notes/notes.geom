@@ -12,11 +12,13 @@ layout(location = 1) out vec2 frag_tex_coord;
 layout(location = 2) out vec2 v_note_size;
 layout(location = 3) out vec2 win_size;
 layout(location = 4) out uint border_width;
+layout(location = 5) out uint skin_id;
 
 layout(push_constant) uniform PushConstants {
     float height_time;
     float win_width;
     float win_height;
+    uint skin_id;
 } consts;
 
 struct KeyPosition {
@@ -57,6 +59,7 @@ void main()
     v_note_size = note_size_out;
     win_size = win_size_out;
     border_width = border_width_in[0];
+    skin_id = consts.skin_id;
     EmitVertex();
 
     gl_Position = vec4(right, start, 0, 1);
@@ -65,6 +68,7 @@ void main()
     v_note_size = note_size_out;
     win_size = win_size_out;
     border_width = border_width_in[0];
+    skin_id = consts.skin_id;
     EmitVertex();
 
     gl_Position = vec4(left, end, 0, 1);
@@ -73,6 +77,7 @@ void main()
     v_note_size = note_size_out;
     win_size = win_size_out;
     border_width = border_width_in[0];
+    skin_id = consts.skin_id;
     EmitVertex();
 
     gl_Position = vec4(right, end, 0, 1);
@@ -81,6 +86,7 @@ void main()
     v_note_size = note_size_out;
     win_size = win_size_out;
     border_width = border_width_in[0];
+    skin_id = consts.skin_id;
     EmitVertex();
 
     EndPrimitive();

@@ -1,11 +1,13 @@
 use std::{
-    sync::{atomic::Ordering, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     thread::{self, JoinHandle},
 };
 use time::Duration;
 
 use atomic_float::AtomicF64;
-use crossbeam_channel::Receiver;
 use midi_toolkit::{
     events::Event,
     io::{DiskReader, MIDIFile as TKMIDIFile},
@@ -20,11 +22,11 @@ use crate::{
     audio_playback::WasabiAudioPlayer,
     midi::{
         audio::live::LiveAudioPlayer,
+        double_buffer::DoubleBufferReader,
+        live::block::LiveWindowSnapshot,
         shared::timer::{TimeKeeper, WaitResult},
     },
 };
-
-use self::notes::LiveNoteBlockWithKey;
 
 mod audio;
 mod notes;
@@ -40,7 +42,7 @@ pub struct LiveMidiParser {
     file_manager: ThreadManager,
     note_manager: ThreadManager,
     audio_manager: ThreadManager,
-    note_reciever: Receiver<LiveNoteBlockWithKey>,
+    alive: Arc<AtomicBool>,
 }
 
 impl LiveMidiParser {
@@ -48,7 +50,7 @@ impl LiveMidiParser {
         midi: &TKMIDIFile<DiskReader>,
         player: Arc<WasabiAudioPlayer>,
         timer: &mut TimeKeeper,
-    ) -> Self {
+    ) -> (Self, DoubleBufferReader<LiveWindowSnapshot>, Arc<AtomicF64>) {
         let ppq = midi.ppq();
         let merged = pipe!(
             midi.iter_all_track_events_merged_batches()
@@ -61,24 +63,32 @@ impl LiveMidiParser {
         let (note_snd, note_rcv) = crossbeam_channel::bounded::<Arc<TrackEventBatch>>(1000);
         let (audio_snd, audio_rcv) = crossbeam_channel::bounded::<Arc<TrackEventBatch>>(1000);
 
-        let notes = notes::init_note_manager(note_rcv);
+        let shared_view_start = Arc::new(AtomicF64::new(f64::NEG_INFINITY));
+        let alive = Arc::new(AtomicBool::new(true));
+
+        let notes = notes::init_note_manager(note_rcv, shared_view_start.clone(), alive.clone());
         let audio = audio::init_audio_manager(audio_rcv);
 
-        LiveAudioPlayer::new(audio.reciever, timer.get_listener(), player).spawn_playback();
+        LiveAudioPlayer::new(audio.reciever, audio.recycler, timer.get_listener(), player)
+            .spawn_playback();
 
         let mut parser_timer = timer.get_listener();
 
         let parse_time_outer = Arc::new(AtomicF64::default());
         let parse_time = parse_time_outer.clone();
+        let file_alive = alive.clone();
         let file_handle = thread::spawn(move || {
             let mut time = 0.0;
             for block in merged {
+                if !file_alive.load(Ordering::Acquire) {
+                    break;
+                }
                 if block.delta > 0.0 {
                     time += block.delta;
                     parse_time.store(time, Ordering::Relaxed);
                 }
 
-                let playback_time = (time - 10.0).max(0.0); // 10 seconds offset
+                let playback_time = (time - 10.0).max(0.0); // 10 seconds lookahead window
                 let waited = parser_timer.wait_until(Duration::seconds_f64(playback_time));
                 if let WaitResult::Killed = waited {
                     break;
@@ -86,40 +96,37 @@ impl LiveMidiParser {
 
                 let block = Arc::new(block);
 
-                let res = note_snd.send(block.clone());
-                if res.is_err() {
+                if note_snd.send(block.clone()).is_err() {
                     break;
                 }
 
-                let res = audio_snd.send(block);
-                if res.is_err() {
+                if audio_snd.send(block).is_err() {
                     break;
                 }
             }
         });
 
-        Self {
+        let parser = Self {
             file_manager: ThreadManager {
                 handle: file_handle,
                 parse_time: parse_time_outer,
             },
             note_manager: notes.manager,
             audio_manager: audio.manager,
-            note_reciever: notes.reciever,
-        }
+            alive,
+        };
+
+        (parser, notes.window_reader, shared_view_start)
     }
 
+    #[inline]
     pub fn parse_time(&self) -> f64 {
-        // let file_time = self.file_manager.parse_time.load(Ordering::Relaxed);
-        // let note_time = self.note_manager.parse_time.load(Ordering::Relaxed);
-        // let audio_time = self.audio_manager.parse_time.load(Ordering::Relaxed);
-
-        // file_time.min(note_time).min(audio_time)
-
         self.file_manager.parse_time.load(Ordering::Relaxed)
     }
+}
 
-    pub fn recieve_next_note_blocks(&self) -> impl '_ + Iterator<Item = LiveNoteBlockWithKey> {
-        self.note_reciever.try_iter()
+impl Drop for LiveMidiParser {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Release);
     }
 }

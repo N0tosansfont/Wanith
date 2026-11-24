@@ -66,6 +66,7 @@ impl WasabiConfigFileV1 {
             scene: SceneSettings {
                 bg_color: cfg.visual.bg_color,
                 bar_color: cfg.visual.bar_color,
+                skin: Default::default(),
                 statistics: Default::default(),
                 note_speed: cfg.midi.note_speed,
                 key_range: cfg.midi.key_range,

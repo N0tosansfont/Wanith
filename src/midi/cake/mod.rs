@@ -1,4 +1,11 @@
-use std::{path::PathBuf, sync::Arc, thread};
+use std::{
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+};
 use time::Duration;
 
 use midi_toolkit::{
@@ -18,7 +25,7 @@ use crate::{
         audio::ram::InRamAudioPlayer,
         cake::tree_threader::{NoteEvent, ThreadedTreeSerializers},
         open_file_and_signature,
-        shared::{audio::CompressedAudio, timer::TimeKeeper},
+        shared::{audio::FlatAudioTimeline, timer::TimeKeeper},
         MIDIColor,
     },
     settings::MidiSettings,
@@ -34,11 +41,19 @@ mod tree_serializer;
 mod tree_threader;
 mod unended_note_batch;
 
+static NEXT_CAKE_FILE_ID: AtomicU64 = AtomicU64::new(1);
+
 pub struct CakeMIDIFile {
-    blocks: Vec<CakeBlock>,
+    /// Monotonic file identifier for zero-allocation GPU upload detection.
+    file_id: u64,
+    /// CPU-side binary trees held ONLY until `CakeRenderer` uploads them to `DEVICE_LOCAL` VRAM.
+    /// Immediately taken and dropped after GPU transfer to eliminate CPU/VRAM double-residency.
+    cpu_blocks: Option<Vec<CakeBlock>>,
     timer: TimeKeeper,
     length: f64,
     note_count: u64,
+    /// Lock-free passed-notes counter updated from the 4 KB GPU Compute metadata readback.
+    passed_notes: AtomicU64,
     ticks_per_second: u32,
     signature: MIDIFileUniqueSignature,
 }
@@ -133,8 +148,7 @@ impl CakeMIDIFile {
         });
 
         let audio_join_handle = thread::spawn(|| {
-            let vec: Vec<_> = CompressedAudio::build_blocks(audio_rcv.into_iter()).collect();
-            vec
+            FlatAudioTimeline::build_from_iter(audio_rcv.into_iter())
         });
 
         let mut length = 0.0;
@@ -157,44 +171,48 @@ impl CakeMIDIFile {
 
         InRamAudioPlayer::new(audio, timer.get_listener(), player).spawn_playback();
 
+        let file_id = NEXT_CAKE_FILE_ID.fetch_add(1, Ordering::Relaxed);
+
         Ok(CakeMIDIFile {
-            blocks: keys,
+            file_id,
+            cpu_blocks: Some(keys),
             timer,
             length,
             note_count,
+            passed_notes: AtomicU64::new(0),
             ticks_per_second,
             signature,
         })
     }
 
-    pub fn key_blocks(&self) -> &[CakeBlock] {
-        &self.blocks
+    #[inline]
+    pub fn file_id(&self) -> u64 {
+        self.file_id
     }
 
+    /// Take ownership of the CPU-side binary trees for one-shot `DEVICE_LOCAL` VRAM upload.
+    ///
+    /// Once returned and dropped by the renderer, zero bytes of note tree data remain in CPU RAM.
+    #[inline]
+    pub fn take_cpu_blocks(&mut self) -> Option<Vec<CakeBlock>> {
+        self.cpu_blocks.take()
+    }
+
+    /// Update the passed-notes statistic from the GPU compute 4 KB metadata readback.
+    #[inline]
+    pub fn set_passed_notes(&self, passed: u64) {
+        self.passed_notes.store(passed, Ordering::Relaxed);
+    }
+
+    #[inline]
     pub fn ticks_per_second(&self) -> u32 {
         self.ticks_per_second
     }
 
+    #[inline]
     pub fn current_time(&self) -> Duration {
         self.timer.get_time()
     }
-
-    pub fn cake_signature(&self) -> CakeSignature {
-        CakeSignature {
-            file_signature: self.signature.clone(),
-            note_count: self.note_count,
-            buffer_sizes: self.blocks.iter().map(|b| b.tree.len()).collect(),
-        }
-    }
-}
-
-/// A struct that uniquely identifies a cake midi file.
-/// This lets the renderer know if the file has changed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CakeSignature {
-    file_signature: MIDIFileUniqueSignature,
-    note_count: u64,
-    buffer_sizes: Vec<usize>,
 }
 
 impl MIDIFileBase for CakeMIDIFile {
@@ -219,14 +237,16 @@ impl MIDIFileBase for CakeMIDIFile {
     }
 
     fn stats(&self) -> MIDIFileStats {
-        let time = self.timer.get_time().as_seconds_f64();
-        let time_int = (time * self.ticks_per_second as f64) as i32;
-
-        let passed_notes = self
-            .key_blocks()
-            .iter()
-            .map(|b| b.get_notes_passed_at(time_int) as u64)
-            .sum();
+        let passed_notes = if let Some(ref blocks) = self.cpu_blocks {
+            let time = self.timer.get_time().as_seconds_f64();
+            let time_int = (time * self.ticks_per_second as f64) as i32;
+            blocks
+                .iter()
+                .map(|b| b.get_notes_passed_at(time_int) as u64)
+                .sum()
+        } else {
+            self.passed_notes.load(Ordering::Relaxed)
+        };
 
         MIDIFileStats {
             total_notes: Some(self.note_count),

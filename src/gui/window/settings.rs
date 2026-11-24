@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use soundfonts::EguiSFList;
+use tokio::sync::oneshot::Receiver;
 
 use crate::{
     settings::{Colors, Synth, WasabiSettings},
@@ -11,6 +12,8 @@ use crate::{
 use super::WasabiError;
 
 mod midi;
+mod render;
+mod skin;
 mod soundfonts;
 mod synth;
 mod visual;
@@ -36,6 +39,7 @@ pub struct SettingsWindow {
     #[cfg(all(supported_os, not(target_os = "freebsd")))]
     midi_devices: Vec<MidiDevice>,
     sf_list: EguiSFList,
+    render_output_picker: Option<Receiver<PathBuf>>,
 }
 
 impl SettingsWindow {
@@ -50,6 +54,7 @@ impl SettingsWindow {
             #[cfg(all(supported_os, not(target_os = "freebsd")))]
             midi_devices: Vec::new(),
             sf_list,
+            render_output_picker: None,
         }
     }
 
@@ -62,7 +67,9 @@ impl SettingsWindow {
         let frame = utils::create_window_frame(ctx);
         let win = ctx.available_rect();
 
-        egui::Window::new("Settings")
+        let win_title = state.i18n.t("settings.title").to_owned();
+        egui::Window::new(win_title)
+            .id(egui::Id::new("wanith_settings_window"))
             .resizable(true)
             .collapsible(false)
             .title_bar(true)
@@ -79,46 +86,63 @@ impl SettingsWindow {
                             .text_styles
                             .get_mut(&egui::TextStyle::Button)
                             .unwrap()
-                            .size = 18.0;
+                            .size = 16.0;
 
-                        ui.columns(4, |columns| {
+                        let tab_visual = format!("\u{1f4bb} {}", state.i18n.t("settings.tab.visual"));
+                        let tab_skin = format!("\u{1f3a8} {}", state.i18n.t("settings.tab.skin"));
+                        let tab_midi = format!("\u{1f3b5} {}", state.i18n.t("settings.tab.midi"));
+                        let tab_synth = format!("\u{1f3b9} {}", state.i18n.t("settings.tab.synth"));
+                        let tab_sf = format!("\u{1f50a} {}", state.i18n.t("settings.tab.soundfonts"));
+                        let tab_render = format!("\u{1f3ac} {}", state.i18n.t("settings.tab.render"));
+
+                        ui.columns(6, |columns| {
                             columns[0].vertical_centered_justified(|ui| {
                                 ui.selectable_value(
                                     &mut state.settings_tab,
                                     SettingsTab::Visual,
-                                    "\u{1f4bb} Visual",
+                                    tab_visual,
                                 )
                             });
                             columns[1].vertical_centered_justified(|ui| {
                                 ui.selectable_value(
                                     &mut state.settings_tab,
-                                    SettingsTab::Midi,
-                                    "\u{1f3b5} MIDI",
+                                    SettingsTab::Skin,
+                                    tab_skin,
                                 )
                             });
                             columns[2].vertical_centered_justified(|ui| {
                                 ui.selectable_value(
                                     &mut state.settings_tab,
+                                    SettingsTab::Midi,
+                                    tab_midi,
+                                )
+                            });
+                            columns[3].vertical_centered_justified(|ui| {
+                                ui.selectable_value(
+                                    &mut state.settings_tab,
                                     SettingsTab::Synth,
-                                    "\u{1f3b9} Synth",
+                                    tab_synth,
                                 )
                             });
 
-                            #[cfg(supported_os)]
-                            let sf_kdmapi_check = settings.synth.synth == Synth::Kdmapi
-                                && !settings.synth.kdmapi.use_om_sflist;
-                            #[cfg(not(supported_os))]
-                            let sf_kdmapi_check = false;
-                            columns[3].vertical_centered_justified(|ui| {
+                            columns[4].vertical_centered_justified(|ui| {
                                 ui.add_enabled_ui(
-                                    settings.synth.synth == Synth::XSynth || sf_kdmapi_check,
+                                    settings.synth.synth == Synth::XSynth
+                                        || settings.synth.synth == Synth::Kdmapi,
                                     |ui| {
                                         ui.selectable_value(
                                             &mut state.settings_tab,
                                             SettingsTab::SoundFonts,
-                                            "\u{1f50a} SoundFonts",
+                                            tab_sf,
                                         )
                                     },
+                                )
+                            });
+                            columns[5].vertical_centered_justified(|ui| {
+                                ui.selectable_value(
+                                    &mut state.settings_tab,
+                                    SettingsTab::Render,
+                                    tab_render,
                                 )
                             });
                         });
@@ -129,21 +153,29 @@ impl SettingsWindow {
                     .resizable(false)
                     .show_inside(ui, |ui| {
                         ui.add_space(8.0);
-                        ui.columns(2, |columns| {
+                        let save_lbl = format!("\u{1F4BE} {}", state.i18n.t("settings.save"));
+                        let close_lbl = format!("\u{2716} {}", state.i18n.t("settings.close"));
+                        let about_lbl = format!("\u{2139} {}", state.i18n.t("settings.about"));
+                        ui.columns(3, |columns| {
                             columns[0].with_layout(
                                 egui::Layout::top_down(egui::Align::RIGHT),
                                 |ui| {
-                                    if ui.button("\u{1F4BE} Save").clicked() {
+                                    if ui.button(save_lbl).clicked() {
                                         settings
                                             .save_to_file()
                                             .unwrap_or_else(|e| state.errors.error(&e));
                                     }
                                 },
                             );
-                            columns[1].with_layout(
+                            columns[1].vertical_centered(|ui| {
+                                if ui.button(about_lbl).clicked() {
+                                    state.show_about = true;
+                                }
+                            });
+                            columns[2].with_layout(
                                 egui::Layout::top_down(egui::Align::LEFT),
                                 |ui| {
-                                    if ui.button("\u{2716} Close").clicked() {
+                                    if ui.button(close_lbl).clicked() {
                                         state.show_settings = false;
                                     }
                                 },
@@ -155,7 +187,12 @@ impl SettingsWindow {
                 egui::CentralPanel::default().show_inside(ui, |ui| {
                     egui::ScrollArea::vertical().animated(true).show(ui, |ui| {
                         match state.settings_tab {
-                            SettingsTab::Visual => self.show_visual_settings(ui, settings, width),
+                            SettingsTab::Visual => {
+                                self.show_visual_settings(ui, settings, state, width)
+                            }
+                            SettingsTab::Skin => {
+                                self.show_skin_settings(ui, settings, state, width)
+                            }
                             SettingsTab::Midi => {
                                 self.show_midi_settings(ui, settings, state, width)
                             }
@@ -163,6 +200,9 @@ impl SettingsWindow {
                                 self.show_synth_settings(ui, settings, state, width)
                             }
                             SettingsTab::SoundFonts => self.sf_list.show(ui, settings, state),
+                            SettingsTab::Render => {
+                                self.show_render_settings(ui, settings, state, width)
+                            }
                         }
                     })
                 });

@@ -1,5 +1,5 @@
 [package]
-name = "wasabi"
+name = "wanith"
 version = "1.0.4"
 edition = "2021"
 
@@ -13,6 +13,9 @@ raw-window-handle = "0.6"
 vulkano = "0.35.2"
 vulkano-shaders = "0.35.0"
 vulkano-win = "0.34.0"
+ash = "0.38.0"
+libloading = "0.8"
+fdk-aac-rs = { version = "0.1.0", default-features = false, features = ["encoder"] }
 midi-toolkit-rs = "0.1.0"
 xsynth-core = { version = "0.3.4", features = ["serde"] }
 xsynth-realtime = { version = "0.3.4", features = ["serde"] }
@@ -46,9 +49,7 @@ num_enum = "0.7.4"
 palette = "0.7.6"
 colors-transform = "0.2"
 numfmt = "1.2.0"
-
-[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows", target_os = "macos"))'.dependencies]
-kdmapi-rs = { package = "kdmapi", git = "https://github.com/BlackMIDIDevs/kdmapi-rs", rev = "994220f" }
+kdmapiv3 = { package = "kdmapiv3", git = "https://github.com/N0tosansfont/kdmapiv3.git", tag = "v0.1.0" }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
 midir = "0.10.2"

@@ -14,7 +14,6 @@ use crate::utils;
 pub enum WasabiError {
     MidiLoadError(MIDILoadError),
     SoundFontLoadError(LoadSfError),
-    #[cfg(supported_os)]
     SynthError(String),
     FilesystemError(std::io::Error),
     SettingsError(String),
@@ -34,7 +33,6 @@ impl fmt::Display for WasabiError {
                 MIDILoadError::FileTooBig => write!(f, "MIDI Load Error: File Too Big"),
             },
             WasabiError::SoundFontLoadError(e) => write!(f, "Error Parsing SoundFont: {e}"),
-            #[cfg(supported_os)]
             WasabiError::SynthError(e) => write!(f, "Synth Error: {e}"),
             WasabiError::FilesystemError(e) => write!(f, "Filesystem Error: {e}"),
             WasabiError::SettingsError(e) => write!(f, "Settings Error: {e}"),
@@ -99,10 +97,10 @@ impl GuiMessageSystem {
 
         let filename = {
             let ext = if OS == "windows" { ".exe" } else { "" };
-            format!("wasabi-{}-{}{}", OS, ARCH, ext)
+            format!("wanith-{}-{}{}", OS, ARCH, ext)
         };
         let link = format!(
-            "https://github.com/BlackMIDIDevs/wasabi/releases/download/{}/{}",
+            "https://github.com/N0tosansfont/Wanith/releases/download/{}/{}",
             version.clone(),
             filename
         );
@@ -113,7 +111,7 @@ impl GuiMessageSystem {
             errtype: MessageType::NewUpdate(link),
             title: "Update Available".into(),
             message: format!(
-                "A new update for Wasabi ({}) is available.\nWould you like to download it?",
+                "A new update for Wanith ({}) is available.\nWould you like to download it?",
                 version
             )
             .into(),

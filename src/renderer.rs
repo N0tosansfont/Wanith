@@ -48,7 +48,7 @@ impl Renderer {
         event_loop: &ActiveEventLoop,
         window: Window,
         settings: &mut WasabiSettings,
-        state: &WasabiState,
+        state: &mut WasabiState,
     ) -> Self {
         // Why
         let library = VulkanLibrary::new().unwrap();
@@ -114,12 +114,23 @@ impl Renderer {
             physical_device.properties().device_type,
         );
 
-        // Create device
+        // Read-only hardware Vulkan Video Encode probe for offline Render Mode UI
+        state.gpu_video_caps =
+            crate::offline_render::GpuVideoCapabilities::probe(&physical_device);
+
+        // Create device (enable dynamic storage buffer array indexing when supported)
+        let mut enabled_features = features;
+        if physical_device
+            .supported_features()
+            .shader_storage_buffer_array_dynamic_indexing
+        {
+            enabled_features.shader_storage_buffer_array_dynamic_indexing = true;
+        }
         let (device, mut queues) = Device::new(
             physical_device.clone(),
             DeviceCreateInfo {
                 enabled_extensions: device_extensions,
-                enabled_features: features,
+                enabled_features,
                 queue_create_infos: vec![QueueCreateInfo {
                     queue_family_index,
                     ..Default::default()
@@ -169,6 +180,7 @@ impl Renderer {
             device: device.clone(),
             queue: queue.clone(),
             format: swap_chain.state().images_state.format,
+            scene_future: None,
         };
 
         let gui_window = GuiWasabiWindow::new(&mut gui_render_data, settings, state);
@@ -256,12 +268,14 @@ impl Renderer {
         // Join the futures
         let future = previous_frame_future.join(acquire_future);
 
+        let mut scene_future: Option<Box<dyn GpuFuture>> = None;
         self.gui.immediate_ui(|gui| {
             let mut gui_render_data = GuiRenderer {
                 gui,
                 device,
                 queue,
                 format,
+                scene_future: None,
             };
 
             let mut gui_state = GuiState {
@@ -270,12 +284,19 @@ impl Renderer {
             };
             egui_extras::install_image_loaders(&gui_state.renderer.gui.context());
             self.gui_window.layout(&mut gui_state, settings, state);
+            scene_future = gui_state.renderer.scene_future.take();
         });
+
+        // Chain the scene render future directly into egui composition (zero mid-frame CPU stall)
+        let combined_future: Box<dyn GpuFuture> = match scene_future {
+            Some(sf) => Box::new(future.join(sf)),
+            None => Box::new(future),
+        };
 
         // Render the layouts
         let after_future = self
             .gui
-            .draw_on_image(Box::new(future), frame.image.clone());
+            .draw_on_image(combined_future, frame.image.clone());
 
         // Finish render
         frame.present(&self.queue, after_future);

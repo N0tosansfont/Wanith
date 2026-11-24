@@ -50,3 +50,15 @@ You can build Wasabi yourself by following these steps:
 
 ## License
 Wasabi is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.en.html#license-text).
+
+---
+
+## Note from the Author
+
+Hi! I'm just an ordinary person living in a small city in South Korea.  
+I deeply love and respect everyone in the Black MIDI community—including the original Wasabi developers, synth engineers, MIDI creators, and players—and I hold no ill will toward anyone. This fork/project was crafted via CLI out of pure passion for exploring real-time playback and rendering limits :)
+
+---
+
+안녕하세요! 대한민국에 살고 있는 한 소도시 사람입니다.  
+원본 Wasabi 개발자분들을 비롯한 검은악보(Black MIDI) 관련자분들 모두를 사랑하고 존경하며, 어떠한 악감정도 없습니다. 순수한 애정으로 CLI 환경에서 작업했습니다 :)

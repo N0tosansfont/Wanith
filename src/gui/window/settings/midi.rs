@@ -16,10 +16,10 @@ impl SettingsWindow {
         width: f32,
     ) {
         ui.vertical_centered(|ui| {
-            ui.small("Changes to the settings below will be applied when a new MIDI is loaded.");
+            ui.small(state.i18n.t("midi.notice"));
         });
 
-        ui.heading("Settings");
+        ui.heading(state.i18n.t("midi.heading"));
         egui::Grid::new("midi_settings_grid")
             .num_columns(2)
             .spacing(super::SPACING)
@@ -27,45 +27,32 @@ impl SettingsWindow {
             .min_col_width(width / 2.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("MIDI Parsing Algorithm:");
-                    ui.monospace("\u{2139}").on_hover_text(
-                        "\
-                    - Cake\n\
-                  \0    The most efficient loading and displaying algorithm.\n\
-                  \0    The notes will be stored in binary trees and will be\n\
-                  \0    displayed dynamically. This mode does not support\n\
-                  \0    polyphony statistics.\n\
-                    - Standard (RAM)\n\
-                  \0    The MIDI will be loaded in the RAM and all the notes\n\
-                  \0    will be rendered normally by the GPU.\n\
-                    - Standard (Live)\n\
-                  \0    The MIDI will be streamed live from the disk and all\n\
-                  \0    the notes will be rendered normally by the GPU.\
-                    ",
-                    );
+                    ui.label(state.i18n.t("midi.parsing_algo"));
+                    ui.monospace("\u{2139}")
+                        .on_hover_text(state.i18n.t("midi.parsing_tooltip"));
                 });
                 egui::ComboBox::from_id_salt("midi_parsing_select")
-                    .selected_text(settings.midi.parsing.as_str())
+                    .selected_text(state.i18n.parsing_name(settings.midi.parsing))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut settings.midi.parsing,
                             MidiParsing::Cake,
-                            MidiParsing::Cake.as_str(),
+                            state.i18n.parsing_name(MidiParsing::Cake),
                         );
                         ui.selectable_value(
                             &mut settings.midi.parsing,
                             MidiParsing::Ram,
-                            MidiParsing::Ram.as_str(),
+                            state.i18n.parsing_name(MidiParsing::Ram),
                         );
                         ui.selectable_value(
                             &mut settings.midi.parsing,
                             MidiParsing::Live,
-                            MidiParsing::Live.as_str(),
+                            state.i18n.parsing_name(MidiParsing::Live),
                         );
                     });
                 ui.end_row();
 
-                ui.label("Start Delay (s):");
+                ui.label(state.i18n.t("midi.start_delay"));
                 ui.add(
                     egui::DragValue::new(&mut settings.midi.start_delay)
                         .speed(1.0)
@@ -77,7 +64,7 @@ impl SettingsWindow {
         ui.horizontal(|ui| ui.add_space(width + 40.0));
         ui.add_space(super::CATEG_SPACE);
         ui.horizontal(|ui| {
-            ui.heading("Color Palette");
+            ui.heading(state.i18n.t("midi.palette_heading"));
             ui.monospace("\u{2139}").on_hover_text(
                 "\
                 Each palette should be an image (PNG, JPEG, etc.)\n\
@@ -163,16 +150,19 @@ impl SettingsWindow {
             });
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button("Refresh List").clicked() {
+            if ui.button(state.i18n.t("midi.refresh_list")).clicked() {
                 self.load_palettes(settings)
                     .unwrap_or_else(|e| state.errors.error(&e));
             }
-            if ui.button("Open Palettes Directory").clicked() {
+            if ui.button(state.i18n.t("midi.open_palettes_dir")).clicked() {
                 open::that(WasabiSettings::get_palettes_dir()).unwrap_or_default();
             }
             ui.separator();
-            ui.checkbox(&mut settings.midi.randomize_palette, " Randomize Palette")
-                .on_hover_text("Does not affect \"Rainbow\" and \"Random\" palettes.");
+            ui.checkbox(
+                &mut settings.midi.randomize_palette,
+                format!(" {}", state.i18n.t("midi.randomize_palette")),
+            )
+            .on_hover_text("Does not affect \"Rainbow\" and \"Random\" palettes.");
         });
     }
 }

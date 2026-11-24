@@ -36,7 +36,10 @@ use vulkano::{
 
 use crate::gui::{window::keyboard_layout::KeyboardView, GuiRenderer};
 
-const NOTE_BUFFER_SIZE: u64 = 25000000;
+/// A/B double-buffered vertex slot capacity: 4,000,000 notes x 16 bytes = 64 MB per slot
+/// (128 MB total for A + B, saving 672 MB over the legacy 800 MB fixed allocation).
+/// Frames with > 4M visible notes automatically span multiple A/B passes.
+const NOTE_BUFFER_SIZE: u64 = 4_000_000;
 
 #[repr(C)]
 #[derive(Default, Debug, Copy, Clone, Zeroable, Pod, Vertex)]
@@ -50,6 +53,7 @@ pub struct NoteVertex {
 }
 
 impl NoteVertex {
+    #[inline]
     pub fn new(start: f32, len: f32, key: u8, color: u32, border_width: u32) -> Self {
         Self {
             start_length: [start, len],
@@ -64,10 +68,10 @@ struct BufferSet {
     index: usize,
 }
 
-fn get_buffer(device: &Arc<Device>) -> (Subbuffer<[NoteVertex]>, Subbuffer<[NoteVertex]>) {
-    let allocator = Arc::new(StandardMemoryAllocator::new_default(device.clone()));
-
-    Buffer::new_slice(
+fn create_ab_vertex_buffers(
+    allocator: &Arc<StandardMemoryAllocator>,
+) -> [Subbuffer<[NoteVertex]>; 2] {
+    let (a, b) = Buffer::new_slice(
         allocator.clone(),
         BufferCreateInfo {
             usage: BufferUsage::VERTEX_BUFFER,
@@ -79,21 +83,22 @@ fn get_buffer(device: &Arc<Device>) -> (Subbuffer<[NoteVertex]>, Subbuffer<[Note
         },
         NOTE_BUFFER_SIZE * 2,
     )
-    .expect("failed to create buffer")
-    .split_at(NOTE_BUFFER_SIZE)
+    .expect("failed to create A/B note vertex buffer")
+    .split_at(NOTE_BUFFER_SIZE);
+    [a, b]
 }
 
 impl BufferSet {
-    fn new(device: &Arc<Device>) -> Self {
-        let buffer = get_buffer(device);
+    fn new(allocator: &Arc<StandardMemoryAllocator>) -> Self {
         Self {
-            vertex_buffers: [buffer.0, buffer.1],
+            vertex_buffers: create_ab_vertex_buffers(allocator),
             index: 0,
         }
     }
 
+    #[inline]
     fn next(&mut self) -> &Subbuffer<[NoteVertex]> {
-        self.index = (self.index + 1) % self.vertex_buffers.len();
+        self.index = 1 - self.index;
         &self.vertex_buffers[self.index]
     }
 }
@@ -112,6 +117,13 @@ pub struct KeyPosition {
     _padding: [u8; 8],
 }
 
+struct CachedFramebuffers {
+    image_ptr: usize,
+    extent: [u32; 3],
+    fb_clear: Arc<Framebuffer>,
+    fb_draw_over: Arc<Framebuffer>,
+}
+
 pub struct NoteRenderPass {
     gfx_queue: Arc<Queue>,
     buffer_set: BufferSet,
@@ -120,10 +132,13 @@ pub struct NoteRenderPass {
     render_pass_clear: Arc<RenderPass>,
     render_pass_draw_over: Arc<RenderPass>,
     key_locations: Subbuffer<[[KeyPosition; 256]]>,
+    /// Pre-allocated once at init (zero per-frame DescriptorSet allocations).
+    key_locations_descriptor: Arc<DescriptorSet>,
     depth_buffer: Arc<ImageView>,
     allocator: Arc<StandardMemoryAllocator>,
     cb_allocator: Arc<StandardCommandBufferAllocator>,
-    sd_allocator: Arc<StandardDescriptorSetAllocator>,
+    /// Cached framebuffers per swapchain scene image (zero per-frame Framebuffer allocations).
+    fb_cache: Vec<CachedFramebuffers>,
 }
 
 impl NoteRenderPass {
@@ -131,10 +146,19 @@ impl NoteRenderPass {
         let allocator = Arc::new(StandardMemoryAllocator::new_default(
             renderer.device.clone(),
         ));
+        let cb_allocator = Arc::new(StandardCommandBufferAllocator::new(
+            renderer.device.clone(),
+            Default::default(),
+        ));
+        let sd_allocator = Arc::new(StandardDescriptorSetAllocator::new(
+            renderer.device.clone(),
+            Default::default(),
+        ));
 
         let gfx_queue = renderer.queue.clone();
+        let device: Arc<Device> = gfx_queue.device().clone();
 
-        let render_pass_clear = vulkano::ordered_passes_renderpass!(gfx_queue.device().clone(),
+        let render_pass_clear = vulkano::ordered_passes_renderpass!(device.clone(),
             attachments: {
                 final_color: {
                     format: renderer.format,
@@ -159,7 +183,7 @@ impl NoteRenderPass {
         )
         .unwrap();
 
-        let render_pass_draw_over = vulkano::ordered_passes_renderpass!(gfx_queue.device().clone(),
+        let render_pass_draw_over = vulkano::ordered_passes_renderpass!(device.clone(),
             attachments: {
                 final_color: {
                     format: renderer.format,
@@ -213,15 +237,15 @@ impl NoteRenderPass {
         )
         .unwrap();
 
-        let vs = vs::load(gfx_queue.device().clone())
+        let vs = vs::load(device.clone())
             .expect("failed to create shader module")
             .entry_point("main")
             .unwrap();
-        let fs = fs::load(gfx_queue.device().clone())
+        let fs = fs::load(device.clone())
             .expect("failed to create shader module")
             .entry_point("main")
             .unwrap();
-        let gs = gs::load(gfx_queue.device().clone())
+        let gs = gs::load(device.clone())
             .expect("failed to create shader module")
             .entry_point("main")
             .unwrap();
@@ -233,9 +257,9 @@ impl NoteRenderPass {
             PipelineShaderStageCreateInfo::new(gs),
         ];
         let layout = PipelineLayout::new(
-            renderer.device.clone(),
+            device.clone(),
             PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
-                .into_pipeline_layout_create_info(renderer.device.clone())
+                .into_pipeline_layout_create_info(device.clone())
                 .unwrap(),
         )
         .unwrap();
@@ -265,35 +289,85 @@ impl NoteRenderPass {
         };
 
         let pipeline_clear =
-            GraphicsPipeline::new(renderer.device.clone(), None, create_info.clone()).unwrap();
+            GraphicsPipeline::new(device.clone(), None, create_info.clone()).unwrap();
 
         create_info.subpass = Some(PipelineSubpassType::BeginRenderPass(
             Subpass::from(render_pass_draw_over.clone(), 0).unwrap(),
         ));
-        let pipeline_draw_over =
-            GraphicsPipeline::new(renderer.device.clone(), None, create_info).unwrap();
+        let pipeline_draw_over = GraphicsPipeline::new(device, None, create_info).unwrap();
+
+        let desc_layout = pipeline_clear.layout().set_layouts()[0].clone();
+        let key_locations_descriptor = DescriptorSet::new(
+            sd_allocator,
+            desc_layout,
+            [WriteDescriptorSet::buffer(0, key_locations.clone())],
+            [],
+        )
+        .unwrap();
+
+        let buffer_set = BufferSet::new(&allocator);
 
         NoteRenderPass {
             gfx_queue,
-            buffer_set: BufferSet::new(&renderer.device),
+            buffer_set,
             pipeline_clear,
             pipeline_draw_over,
             render_pass_clear,
             render_pass_draw_over,
             depth_buffer,
             key_locations,
+            key_locations_descriptor,
             allocator,
-            cb_allocator: StandardCommandBufferAllocator::new(
-                renderer.device.clone(),
-                Default::default(),
-            )
-            .into(),
-            sd_allocator: StandardDescriptorSetAllocator::new(
-                renderer.device.clone(),
-                Default::default(),
-            )
-            .into(),
+            cb_allocator,
+            fb_cache: Vec::with_capacity(4),
         }
+    }
+
+    fn get_or_create_framebuffers(
+        &mut self,
+        final_image: &Arc<ImageView>,
+    ) -> (Arc<Framebuffer>, Arc<Framebuffer>) {
+        let img_ptr = Arc::as_ptr(final_image) as usize;
+        let extent = final_image.image().extent();
+
+        if let Some(entry) = self
+            .fb_cache
+            .iter()
+            .find(|e| e.image_ptr == img_ptr && e.extent == extent)
+        {
+            return (entry.fb_clear.clone(), entry.fb_draw_over.clone());
+        }
+
+        if self.fb_cache.len() >= 8 {
+            self.fb_cache.clear();
+        }
+
+        let fb_clear = Framebuffer::new(
+            self.render_pass_clear.clone(),
+            FramebufferCreateInfo {
+                attachments: vec![final_image.clone(), self.depth_buffer.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let fb_draw_over = Framebuffer::new(
+            self.render_pass_draw_over.clone(),
+            FramebufferCreateInfo {
+                attachments: vec![final_image.clone(), self.depth_buffer.clone()],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        self.fb_cache.push(CachedFramebuffers {
+            image_ptr: img_ptr,
+            extent,
+            fb_clear: fb_clear.clone(),
+            fb_draw_over: fb_draw_over.clone(),
+        });
+
+        (fb_clear, fb_draw_over)
     }
 
     pub fn draw(
@@ -301,8 +375,9 @@ impl NoteRenderPass {
         final_image: Arc<ImageView>,
         key_view: &KeyboardView,
         view_range: f32,
+        skin_id: u32,
         mut fill_buffer: impl FnMut(&Subbuffer<[NoteVertex]>) -> NotePassStatus,
-    ) {
+    ) -> Option<Box<dyn GpuFuture>> {
         let img_dims = final_image.image().extent();
         if self.depth_buffer.image().extent() != img_dims {
             self.depth_buffer = ImageView::new_default(
@@ -319,6 +394,7 @@ impl NoteRenderPass {
                 .unwrap(),
             )
             .unwrap();
+            self.fb_cache.clear();
         }
 
         {
@@ -332,16 +408,17 @@ impl NoteRenderPass {
             }
         }
 
+        let (fb_clear, fb_draw_over) = self.get_or_create_framebuffers(&final_image);
+
         let mut prev_future: Option<FenceSignalFuture<Box<dyn GpuFuture>>> = None;
-
         let mut status = NotePassStatus::HasMoreNotes;
-
         let mut first_pass = true;
+        let mut final_future: Option<Box<dyn GpuFuture>> = None;
 
         while status == NotePassStatus::HasMoreNotes {
-            let buffer = self.buffer_set.next();
+            let buffer = self.buffer_set.next().clone();
 
-            status = fill_buffer(buffer);
+            status = fill_buffer(&buffer);
 
             let items_to_render = match status {
                 NotePassStatus::Finished { remaining } => {
@@ -358,41 +435,22 @@ impl NoteRenderPass {
             )
             .unwrap();
 
-            let (clears, pipeline, render_pass) = if first_pass {
+            let (clears, pipeline, framebuffer) = if first_pass {
                 first_pass = false;
                 (
                     vec![Some([0.0, 0.0, 0.0, 0.0].into()), Some(1.0f32.into())],
                     &self.pipeline_clear,
-                    &self.render_pass_clear,
+                    fb_clear.clone(),
                 )
             } else {
                 (
                     vec![None, None],
                     &self.pipeline_draw_over,
-                    &self.render_pass_draw_over,
+                    fb_draw_over.clone(),
                 )
             };
 
-            let framebuffer = Framebuffer::new(
-                render_pass.clone(),
-                FramebufferCreateInfo {
-                    attachments: vec![final_image.clone(), self.depth_buffer.clone()],
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-
             let pipeline_layout = pipeline.layout();
-
-            let desc_layout = pipeline_layout.set_layouts().first().unwrap();
-            let write_descriptor_set = WriteDescriptorSet::buffer(0, self.key_locations.clone());
-            let set = DescriptorSet::new(
-                self.sd_allocator.clone(),
-                desc_layout.clone(),
-                [write_descriptor_set],
-                [],
-            )
-            .unwrap();
 
             let subpassbegininfo = SubpassBeginInfo {
                 contents: SubpassContents::Inline,
@@ -413,6 +471,7 @@ impl NoteRenderPass {
                 height_time: view_range,
                 win_width: img_dims[0] as f32,
                 win_height: img_dims[1] as f32,
+                skin_id,
             };
 
             unsafe {
@@ -421,24 +480,25 @@ impl NoteRenderPass {
                     .unwrap()
                     .set_viewport(
                         0,
-                        vec![Viewport {
+                        [Viewport {
                             offset: [0.0, 0.0],
                             extent: [img_dims[0] as f32, img_dims[1] as f32],
                             depth_range: 0.0..=1.0,
                         }]
-                        .into(),
+                        .into_iter()
+                        .collect(),
                     )
                     .unwrap()
-                    .push_constants(pipeline_layout.clone().clone(), 0, push_constants)
+                    .push_constants(pipeline_layout.clone(), 0, push_constants)
                     .unwrap()
                     .bind_descriptor_sets(
                         PipelineBindPoint::Graphics,
                         pipeline_layout.clone(),
                         0,
-                        set.clone(),
+                        self.key_locations_descriptor.clone(),
                     )
                     .unwrap()
-                    .bind_vertex_buffers(0, buffer.clone())
+                    .bind_vertex_buffers(0, buffer)
                     .unwrap()
                     .draw(items_to_render, 1, 0, 0)
                     .unwrap()
@@ -449,32 +509,28 @@ impl NoteRenderPass {
                 .unwrap();
             let command_buffer = command_buffer_builder.build().unwrap();
 
-            if let Some(prev_future) = prev_future.take() {
-                match prev_future.wait(None) {
-                    Ok(x) => x,
-                    Err(err) => println!("err: {err:?}"),
-                }
+            // Wait on the alternate A/B pass only when overlapping multiple > 4M-note passes
+            if let Some(prev) = prev_future.take() {
+                let _ = prev.wait(None);
             }
 
-            let future = sync::now(self.gfx_queue.device().clone()).boxed();
-            let after_main_cb = future
+            let after_main_cb = sync::now(self.gfx_queue.device().clone())
                 .then_execute(self.gfx_queue.clone(), command_buffer)
-                .unwrap();
+                .unwrap()
+                .boxed();
 
-            let future = after_main_cb
-                .boxed()
-                .then_signal_fence_and_flush()
-                .expect("Failed to signal fence and flush");
-
-            prev_future = Some(future);
-        }
-
-        if let Some(prev_future) = prev_future {
-            match prev_future.wait(None) {
-                Ok(x) => x,
-                Err(err) => println!("err: {err:?}"),
+            if status == NotePassStatus::HasMoreNotes {
+                let fence_future = after_main_cb
+                    .then_signal_fence_and_flush()
+                    .expect("Failed to signal fence and flush");
+                prev_future = Some(fence_future);
+            } else {
+                // Final (or only) pass: return GPU future directly to egui composition with ZERO CPU stall!
+                final_future = Some(after_main_cb);
             }
         }
+
+        final_future
     }
 }
 

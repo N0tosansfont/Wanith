@@ -72,7 +72,7 @@ impl GuiWasabiWindow {
 
                     if ui
                         .add(egui::ImageButton::new(folder_img))
-                        .on_hover_text("Open MIDI")
+                        .on_hover_text(state.i18n.t("panel.open_midi"))
                         .clicked()
                     {
                         self.open_midi_dialog(state);
@@ -87,12 +87,13 @@ impl GuiWasabiWindow {
 
                     if ui
                         .add(egui::ImageButton::new(stop_img))
-                        .on_hover_text("Unload")
+                        .on_hover_text(state.i18n.t("panel.unload"))
                         .clicked()
                     {
                         if let Some(midi) = self.midi_file.take().as_mut() {
                             midi.timer_mut().pause();
                             state.synth.reset();
+                            self.reset_peak_stats();
                         }
                     }
 
@@ -112,7 +113,7 @@ impl GuiWasabiWindow {
 
                         if ui
                             .add(egui::ImageButton::new(pause_img))
-                            .on_hover_text("Pause")
+                            .on_hover_text(state.i18n.t("panel.pause"))
                             .clicked()
                         {
                             if let Some(midi_file) = self.midi_file.as_mut() {
@@ -128,7 +129,7 @@ impl GuiWasabiWindow {
 
                         if ui
                             .add(egui::ImageButton::new(play_img))
-                            .on_hover_text("Play")
+                            .on_hover_text(state.i18n.t("panel.play"))
                             .clicked()
                         {
                             if let Some(midi_file) = self.midi_file.as_mut() {
@@ -229,15 +230,15 @@ impl GuiWasabiWindow {
                         &options,
                         PopupCloseBehavior::CloseOnClick,
                         |ui| {
-                            ui.set_min_width(130.0);
+                            ui.set_min_width(145.0);
 
-                            if ui.button("Settings").clicked() {
+                            if ui.button(state.i18n.t("panel.menu.settings")).clicked() {
                                 state.show_settings = true;
                             }
-                            if ui.button("Shortcuts").clicked() {
+                            if ui.button(state.i18n.t("panel.menu.shortcuts")).clicked() {
                                 state.show_shortcuts = true;
                             }
-                            if ui.button("About").clicked() {
+                            if ui.button(state.i18n.t("panel.menu.about")).clicked() {
                                 state.show_about = true;
                             }
                         },
@@ -251,7 +252,7 @@ impl GuiWasabiWindow {
 
                     if ui
                         .add(egui::ImageButton::new(pin_img).selected(state.panel_pinned))
-                        .on_hover_text("Pin Panel")
+                        .on_hover_text(state.i18n.t("panel.pin"))
                         .clicked()
                     {
                         state.panel_pinned = !state.panel_pinned;

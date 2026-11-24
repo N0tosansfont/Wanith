@@ -187,7 +187,7 @@ impl EguiSFList {
                                 WidgetText::from(" \u{2795} ")
                                     .text_style(egui::TextStyle::Name("monospace big".into())),
                             )
-                            .on_hover_text("Add SoundFont(s)")
+                            .on_hover_text(state.i18n.t("soundfonts.add"))
                             .clicked()
                         {
                             let sender = self.sf_picker.0.clone();
@@ -216,7 +216,7 @@ impl EguiSFList {
                                 WidgetText::from(" \u{2796} ")
                                     .text_style(egui::TextStyle::Name("monospace big".into())),
                             )
-                            .on_hover_text("Remove Selected")
+                            .on_hover_text(state.i18n.t("soundfonts.remove"))
                             .clicked()
                         {
                             self.remove_selected_items();
@@ -226,7 +226,7 @@ impl EguiSFList {
                                 WidgetText::from(" \u{2716} ")
                                     .text_style(egui::TextStyle::Name("monospace big".into())),
                             )
-                            .on_hover_text("Clear List")
+                            .on_hover_text(state.i18n.t("soundfonts.clear"))
                             .clicked()
                         {
                             self.clear();
@@ -260,7 +260,7 @@ impl EguiSFList {
                                 WidgetText::from(" \u{2705} ")
                                     .text_style(egui::TextStyle::Name("monospace big".into())),
                             )
-                            .on_hover_text("Apply SoundFont List")
+                            .on_hover_text(state.i18n.t("soundfonts.apply"))
                             .clicked()
                         {
                             state.synth.set_soundfonts(
@@ -272,11 +272,7 @@ impl EguiSFList {
                     });
                 });
                 ui.vertical_centered(|ui| {
-                    ui.small(
-                        "Loading order is bottom to top. \
-                        Double click on a soundfont to modify its options. \
-                        Supported formats: SFZ, SF2",
-                    );
+                    ui.small(state.i18n.t("soundfonts.order_hint"));
                 });
             });
 

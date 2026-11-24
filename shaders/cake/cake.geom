@@ -24,6 +24,7 @@ layout(push_constant) uniform PushConstants {
     int end_time;
     int screen_width;
     int screen_height;
+    uint skin_id;
 } consts;
 
 int tick_at_screen_y(float y) {

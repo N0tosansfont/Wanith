@@ -4,3 +4,16 @@ wasabi_config.toml
 .vscode
 .envrc
 shell.nix
+.cargo/config.toml
+*.bak*
+**/*.rs.bk
+*.pdb
+*.sf2
+*.sf3
+*.mid
+*.midi
+*.wav
+*.mp3
+*.mp4
+*.mkv
+.DS_Store

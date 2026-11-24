@@ -23,6 +23,7 @@ use crate::gui::window::WasabiError;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(default)]
 pub struct GuiSettings {
+    pub language: Language,
     pub check_for_updates: bool,
     pub vsync: bool,
     pub skip_control: f64,
@@ -32,6 +33,7 @@ pub struct GuiSettings {
 impl Default for GuiSettings {
     fn default() -> Self {
         Self {
+            language: Language::English,
             check_for_updates: true,
             vsync: true,
             skip_control: 1.0,
@@ -65,6 +67,7 @@ impl Default for StatisticsSettings {
 pub struct SceneSettings {
     pub bg_color: Color32,
     pub bar_color: Color32,
+    pub skin: SkinPreset,
     pub statistics: StatisticsSettings,
     pub note_speed: f64,
     pub key_range: RangeInclusive<u8>,
@@ -75,6 +78,7 @@ impl Default for SceneSettings {
         Self {
             bg_color: Color32::from_rgb(30, 30, 30),
             bar_color: Color32::from_rgb(145, 0, 0),
+            skin: SkinPreset::default(),
             statistics: Default::default(),
             note_speed: 0.25,
             key_range: 0..=127,
@@ -130,10 +134,32 @@ impl Default for XSynthSettings {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(default)]
 pub struct KdmapiSettings {
-    pub use_om_sflist: bool,
+    pub voice_limit: u32,
+    pub interpolation: KdmapiInterpolation,
+    pub buffer_frames: u32,
+    pub render_threads: u32,
+    pub ring_buffer_capacity: usize,
+    pub disable_all_effects: bool,
+    pub enable_lowpass_filter: bool,
+    pub enable_vibrato_lfo: bool,
+}
+
+impl Default for KdmapiSettings {
+    fn default() -> Self {
+        Self {
+            voice_limit: kdmapiv3::DEFAULT_VOICE_LIMIT,
+            interpolation: KdmapiInterpolation::Linear,
+            buffer_frames: kdmapiv3::DEFAULT_BUFFER_FRAMES,
+            render_threads: kdmapiv3::DEFAULT_RENDER_THREADS,
+            ring_buffer_capacity: kdmapiv3::DEFAULT_SHORT_RING_CAPACITY,
+            disable_all_effects: false,
+            enable_lowpass_filter: true,
+            enable_vibrato_lfo: true,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -158,11 +184,62 @@ pub struct SynthSettings {
 impl Default for SynthSettings {
     fn default() -> Self {
         Self {
-            synth: Synth::XSynth,
+            synth: Synth::Kdmapi,
             soundfonts: Vec::new(),
             xsynth: Default::default(),
             kdmapi: Default::default(),
             midi_device: String::new(),
+        }
+    }
+}
+
+// endregion
+
+// region: render
+
+pub const MIN_RENDER_SAMPLE_RATE: u32 = 8_000;
+pub const MAX_RENDER_SAMPLE_RATE: u32 = 384_000;
+pub const MIN_RENDER_DIMENSION: u32 = 128;
+pub const MAX_RENDER_DIMENSION: u32 = 7_680;
+pub const MIN_RENDER_FPS: u32 = 1;
+pub const MAX_RENDER_FPS: u32 = 1_000;
+pub const MIN_VIDEO_BITRATE_KBPS: u32 = 500;
+pub const MAX_VIDEO_BITRATE_KBPS: u32 = 500_000;
+pub const MIN_VIDEO_QP: u32 = 0;
+pub const MAX_VIDEO_QP: u32 = 51;
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(default)]
+pub struct RenderSettings {
+    pub target: RenderTarget,
+    pub output_path: PathBuf,
+    // Audio (KMC-style deterministic render via engine_core / kdmapi v3)
+    pub sample_rate: u32,
+    pub wav_format: WavSampleFormat,
+    // Video (Zenith fixed-timestep + Native Vulkan Video + in-process AAC/MP4 muxer)
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub video_codec: VideoCodec,
+    pub rate_control: VideoRateControl,
+    pub bitrate_kbps: u32,
+    pub qp: u32,
+}
+
+impl Default for RenderSettings {
+    fn default() -> Self {
+        Self {
+            target: RenderTarget::AudioOnly,
+            output_path: PathBuf::from("output.wav"),
+            sample_rate: kdmapiv3::DEFAULT_SAMPLE_RATE,
+            wav_format: WavSampleFormat::Float32,
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            video_codec: VideoCodec::H264,
+            rate_control: VideoRateControl::Bitrate,
+            bitrate_kbps: 25_000,
+            qp: 20,
         }
     }
 }
@@ -178,6 +255,7 @@ pub struct WasabiSettings {
     pub scene: SceneSettings,
     pub midi: MidiSettings,
     pub synth: SynthSettings,
+    pub render: RenderSettings,
 }
 
 impl WasabiSettings {
@@ -252,9 +330,19 @@ impl WasabiSettings {
     pub fn get_config_dir() -> PathBuf {
         if let Some(base_dirs) = BaseDirs::new() {
             let mut path: PathBuf = base_dirs.config_dir().to_path_buf();
-            path.push("wasabi");
+            path.push("wanith");
 
             if std::fs::create_dir_all(&path).is_ok() {
+                let new_cfg = path.join("wanith-config.json");
+                if !new_cfg.exists() {
+                    let legacy_cfg = base_dirs
+                        .config_dir()
+                        .join("wasabi")
+                        .join("wasabi-config.json");
+                    if legacy_cfg.exists() {
+                        let _ = std::fs::copy(&legacy_cfg, &new_cfg);
+                    }
+                }
                 return path;
             }
         }
@@ -264,7 +352,7 @@ impl WasabiSettings {
 
     fn get_config_path() -> PathBuf {
         let mut path = Self::get_config_dir();
-        path.push("wasabi-config.json");
+        path.push("wanith-config.json");
 
         path
     }

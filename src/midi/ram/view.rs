@@ -47,90 +47,77 @@ impl InRamNoteViewData {
         self.view_range = new_view_range;
 
         self.columns.par_iter_mut().for_each(|column| {
-            if column.blocks.is_empty() {
+            let flat = &column.flat;
+            let block_count = flat.block_count();
+            if block_count == 0 {
                 return;
             }
 
-            let blocks = &column.blocks;
             let data = &mut column.data;
 
             let mut new_block_start = data.block_range.start;
             let mut new_block_end = data.block_range.end;
 
             if new_view_range.end > old_view_range.end {
-                while new_block_end < blocks.len() {
-                    let block = &blocks[new_block_end];
-                    if block.start >= new_view_range.end {
+                while new_block_end < block_count {
+                    if flat.block_start(new_block_end) >= new_view_range.end {
                         break;
                     }
-                    data.notes_to_render_end += block.notes.len() as u64;
+                    data.notes_to_render_end += flat.block_note_count(new_block_end);
                     new_block_end += 1;
                 }
             } else if new_view_range.end < old_view_range.end {
                 while new_block_end > 0 {
-                    let block = &blocks[new_block_end - 1];
-                    if block.start < new_view_range.end {
+                    if flat.block_start(new_block_end - 1) < new_view_range.end {
                         break;
                     }
-                    data.notes_to_render_end -= block.notes.len() as u64;
+                    data.notes_to_render_end -= flat.block_note_count(new_block_end - 1);
                     new_block_end -= 1;
                 }
-            } else {
-                // No change in view end
             }
 
             if new_view_range.start > old_view_range.start {
-                // Increment the note view start
-                while new_block_start < blocks.len() {
-                    let block = &blocks[new_block_start];
-                    if block.max_end() >= new_view_range.start {
+                while new_block_start < block_count {
+                    if flat.block_max_end(new_block_start) >= new_view_range.start {
                         break;
                     }
-                    data.notes_to_render_start += block.notes.len() as u64;
+                    data.notes_to_render_start += flat.block_note_count(new_block_start);
                     new_block_start += 1;
                 }
 
-                // Increment the keyboard passed notes/blocks
-                while data.blocks_to_keyboard < blocks.len() {
-                    let block = &blocks[data.blocks_to_keyboard];
-                    if block.start > new_view_range.start {
+                while data.blocks_to_keyboard < block_count {
+                    if flat.block_start(data.blocks_to_keyboard) > new_view_range.start {
                         break;
                     }
-                    data.notes_to_keyboard += block.notes.len() as u64;
+                    data.notes_to_keyboard += flat.block_note_count(data.blocks_to_keyboard);
                     data.blocks_to_keyboard += 1;
                 }
             } else if new_view_range.start < old_view_range.start {
-                // It is smaller, we have to start from the beginning
                 data.notes_to_render_start = 0;
                 new_block_start = 0;
 
                 data.notes_to_keyboard = 0;
                 data.blocks_to_keyboard = 0;
 
-                // Increment both view start notes and keyboard notes until we reach view start cutoff
-                while new_block_start < blocks.len() {
-                    let block = &blocks[new_block_start];
-                    if block.max_end() >= new_view_range.start {
+                while new_block_start < block_count {
+                    if flat.block_max_end(new_block_start) >= new_view_range.start {
                         break;
                     }
-                    data.notes_to_render_start += block.notes.len() as u64;
+                    let count = flat.block_note_count(new_block_start);
+                    data.notes_to_render_start += count;
                     new_block_start += 1;
 
-                    data.notes_to_keyboard += block.notes.len() as u64;
+                    data.notes_to_keyboard += count;
                     data.blocks_to_keyboard += 1;
                 }
 
-                // Increment the remaining keyboard blocks
-                while data.blocks_to_keyboard < blocks.len() {
-                    let block = &blocks[data.blocks_to_keyboard];
-                    if block.start > new_view_range.start {
+                while data.blocks_to_keyboard < block_count {
+                    if flat.block_start(data.blocks_to_keyboard) > new_view_range.start {
                         break;
                     }
-                    data.notes_to_keyboard += block.notes.len() as u64;
+                    data.notes_to_keyboard += flat.block_note_count(data.blocks_to_keyboard);
                     data.blocks_to_keyboard += 1;
                 }
-            } else {
-                // No change in view start
             }
 
             data.block_range = new_block_start..new_block_end;
@@ -176,19 +163,20 @@ impl<'a> MIDINoteColumnView for InRamNoteColumnView<'a> {
 
     fn iterate_displaced_notes(&self) -> Self::Iter<'_> {
         let colors = &self.view.default_track_colors;
+        let flat = &self.column.flat;
 
         let iter = GenIter(
             #[coroutine]
             move || {
                 for block_index in self.column.data.block_range.clone().rev() {
-                    let block = &self.column.blocks[block_index];
-                    let start = (block.start - self.view_range.start) as f32;
+                    let start = (flat.block_start(block_index) - self.view_range.start) as f32;
+                    let (note_start, note_end) = flat.block_note_range(block_index);
 
-                    for note in block.notes.iter().rev() {
+                    for note_idx in (note_start..note_end).rev() {
                         yield DisplacedMIDINote {
                             start,
-                            len: note.len,
-                            color: colors[note.track_chan.as_usize()],
+                            len: flat.note_lens[note_idx],
+                            color: colors[flat.note_track_chans[note_idx].as_usize()],
                         };
                     }
                 }
@@ -211,14 +199,5 @@ impl<Iter: Iterator<Item = DisplacedMIDINote>> ExactSizeIterator for InRamNoteBl
     fn len(&self) -> usize {
         let data = &self.view.column.data;
         (data.notes_to_render_end - data.notes_to_render_start) as usize
-    }
-}
-
-impl Drop for InRamNoteViewData {
-    fn drop(&mut self) {
-        let data = std::mem::take(&mut self.columns);
-
-        // Drop the columns in a separate thread because often it takes a long time
-        std::thread::spawn(move || drop(data));
     }
 }

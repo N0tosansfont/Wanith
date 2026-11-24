@@ -5,7 +5,6 @@ use crate::{
 
 use super::SettingsWindow;
 
-#[cfg(supported_os)]
 mod kdmapi;
 #[cfg(all(supported_os, not(target_os = "freebsd")))]
 mod mididevice;
@@ -26,21 +25,20 @@ impl SettingsWindow {
             .min_col_width(width / 2.0)
             .show(ui, |ui| {
                 let synth_prev = settings.synth.synth;
-                ui.label("Synthesizer:");
+                ui.label(state.i18n.t("synth.synthesizer"));
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_id_salt("synth_select")
                         .selected_text(settings.synth.synth.as_str())
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
                                 &mut settings.synth.synth,
-                                Synth::XSynth,
-                                Synth::XSynth.as_str(),
-                            );
-                            #[cfg(supported_os)]
-                            ui.selectable_value(
-                                &mut settings.synth.synth,
                                 Synth::Kdmapi,
                                 Synth::Kdmapi.as_str(),
+                            );
+                            ui.selectable_value(
+                                &mut settings.synth.synth,
+                                Synth::XSynth,
+                                Synth::XSynth.as_str(),
                             );
                             #[cfg(all(supported_os, not(target_os = "freebsd")))]
                             ui.selectable_value(
@@ -60,7 +58,7 @@ impl SettingsWindow {
                             egui::WidgetText::from(" \u{1F503} ")
                                 .text_style(egui::TextStyle::Name("monospace big".into())),
                         )
-                        .on_hover_text("Reload Synth")
+                        .on_hover_text(state.i18n.t("synth.reload_tooltip"))
                         .clicked()
                         || settings.synth.synth != synth_prev
                     {
@@ -76,20 +74,19 @@ impl SettingsWindow {
 
         ui.add_space(8.0);
         ui.vertical_centered(|ui| {
-            ui.small("Options marked with (*) will apply when the synth is reloaded.");
+            ui.small(state.i18n.t("synth.reload_notice"));
         });
 
         ui.add_space(super::CATEG_SPACE);
-        ui.heading("Synth Settings");
+        ui.heading(state.i18n.t("synth.heading"));
 
         match settings.synth.synth {
             Synth::XSynth => self.show_xsynth_settings(ui, settings, state, width),
-            #[cfg(supported_os)]
             Synth::Kdmapi => self.show_kdmapi_settings(ui, settings, state, width),
             #[cfg(all(supported_os, not(target_os = "freebsd")))]
             Synth::MidiDevice => self.show_mididevice_settings(ui, settings, state, width),
             Synth::None => {
-                ui.label("No Settings");
+                ui.label(state.i18n.t("synth.no_settings"));
             }
         }
     }

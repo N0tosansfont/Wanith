@@ -1,117 +1,142 @@
 #![allow(dead_code)]
 
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+
+use atomic_float::AtomicF64;
 use gen_iter::GenIter;
-use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 
-use crate::midi::{DisplacedMIDINote, MIDIColor, MIDINoteColumnView, MIDINoteViews, MIDIViewRange};
+use crate::midi::{
+    double_buffer::{DoubleBufferReadGuard, DoubleBufferReader},
+    DisplacedMIDINote, MIDIColor, MIDINoteColumnView, MIDINoteViews, MIDIViewRange,
+};
 
-use super::{column::LiveNoteColumn, parse::LiveMidiParser};
+use super::{
+    block::{LiveFlatColumn, LiveWindowSnapshot},
+    parse::LiveMidiParser,
+};
+
+#[derive(Clone, Copy, Default)]
+struct ColumnWindowSlice {
+    start_block: usize,
+    end_block: usize,
+    rendered_notes: usize,
+}
 
 pub struct LiveNoteViewData {
     parser: LiveMidiParser,
-    columns: Vec<LiveNoteColumn>,
+    window_reader: DoubleBufferReader<LiveWindowSnapshot>,
+    shared_view_start: Arc<AtomicF64>,
     default_track_colors: Vec<MIDIColor>,
-    view_range: MIDIViewRange,
+    last_passed_notes: AtomicU64,
 }
 
 pub struct LiveCurrentNoteViews<'a> {
-    data: &'a LiveNoteViewData,
-}
-
-impl<'a> LiveCurrentNoteViews<'a> {
-    pub fn new(data: &'a LiveNoteViewData) -> Self {
-        LiveCurrentNoteViews { data }
-    }
+    guard: DoubleBufferReadGuard<'a, LiveWindowSnapshot>,
+    colors: &'a [MIDIColor],
+    view_range: MIDIViewRange,
+    slices: [ColumnWindowSlice; 256],
 }
 
 impl LiveNoteViewData {
-    pub fn new(parser: LiveMidiParser, colors: Vec<MIDIColor>) -> Self {
-        let mut columns = Vec::with_capacity(256);
-        columns.resize_with(256, LiveNoteColumn::new);
+    pub fn new(
+        parser: LiveMidiParser,
+        window_reader: DoubleBufferReader<LiveWindowSnapshot>,
+        shared_view_start: Arc<AtomicF64>,
+        colors: Vec<MIDIColor>,
+    ) -> Self {
         LiveNoteViewData {
             parser,
-            columns,
-            view_range: MIDIViewRange {
-                start: f64::NEG_INFINITY,
-                end: f64::NEG_INFINITY,
-            },
+            window_reader,
+            shared_view_start,
             default_track_colors: colors,
+            last_passed_notes: AtomicU64::new(0),
         }
     }
 
-    pub fn shift_view_range(&mut self, new_view_range: MIDIViewRange) {
-        if self.view_range.start > new_view_range.start {
-            panic!("Can't shift live loaded view range backwards");
+    /// Wait-free acquisition of the active A/B sliding window buffer for the current frame.
+    pub fn acquire_views(&mut self, new_view_range: MIDIViewRange) -> LiveCurrentNoteViews<'_> {
+        // Notify the background note worker so blocks with max_end < start are evicted from RAM
+        self.shared_view_start
+            .store(new_view_range.start, Ordering::Relaxed);
+
+        let guard = self.window_reader.read();
+        let mut slices = [ColumnWindowSlice::default(); 256];
+        let mut total_passed = 0u64;
+
+        for (key, col) in guard.columns.iter().enumerate() {
+            let block_count = col.block_count();
+            let mut passed = col.evicted_notes;
+
+            if block_count == 0 {
+                total_passed += passed;
+                continue;
+            }
+
+            // Binary search exclusive end block (first block with start > new_view_range.end)
+            let end_block = col
+                .block_starts
+                .partition_point(|&s| s <= new_view_range.end);
+
+            // Advance start_block past any blocks whose max_end < new_view_range.start
+            // (in case eviction hasn't run yet for the newest millisecond)
+            let mut start_block = 0usize;
+            while start_block < end_block && col.block_max_ends[start_block] < new_view_range.start
+            {
+                start_block += 1;
+            }
+
+            // Exact passed notes at keyboard line (`block_start <= new_view_range.start`)
+            let passed_blocks = col
+                .block_starts
+                .partition_point(|&s| s <= new_view_range.start);
+            if passed_blocks > 0 {
+                passed += col.block_note_offsets[passed_blocks] as u64;
+            }
+            total_passed += passed;
+
+            let rendered_notes = if start_block < end_block {
+                (col.block_note_offsets[end_block] - col.block_note_offsets[start_block]) as usize
+            } else {
+                0
+            };
+
+            slices[key] = ColumnWindowSlice {
+                start_block,
+                end_block,
+                rendered_notes,
+            };
         }
 
-        self.view_range = new_view_range;
+        self.last_passed_notes
+            .store(total_passed, Ordering::Relaxed);
 
-        // Update columns from the parser queue
-        for block in self.parser.recieve_next_note_blocks() {
-            let column = &mut self.columns[block.key as usize];
-            column.blocks.push_back(block.block);
+        LiveCurrentNoteViews {
+            guard,
+            colors: &self.default_track_colors,
+            view_range: new_view_range,
+            slices,
         }
-
-        self.columns.par_iter_mut().for_each(|column| {
-            if column.blocks.is_empty() {
-                return;
-            }
-
-            let blocks = &mut column.blocks;
-            let data = &mut column.data;
-
-            // Move the last block value up until the first block outside view range
-            while data.end_block < blocks.len() {
-                let block = &blocks[data.end_block];
-                if block.start > new_view_range.end {
-                    break;
-                }
-                data.rendered_notes += block.notes.len();
-                data.end_block += 1;
-            }
-
-            while data.blocks_passed_keyboard_index < blocks.len() {
-                if blocks[data.blocks_passed_keyboard_index].start > new_view_range.start {
-                    break;
-                }
-                data.notes_passed_keyboard +=
-                    blocks[data.blocks_passed_keyboard_index].notes.len() as u64;
-                data.blocks_passed_keyboard_index += 1;
-            }
-
-            while let Some(block) = blocks.front() {
-                if block.max_end() < new_view_range.start {
-                    data.rendered_notes -= block.notes.len();
-                    data.blocks_passed_keyboard_index -= 1;
-                    blocks.pop_front();
-
-                    // Unconditionally reduce this value because blocks that have an
-                    // end time below the view range start time are always behind a block that has
-                    // a start time above the view range start time.
-                    data.end_block -= 1;
-                } else {
-                    break;
-                }
-            }
-        });
     }
 
+    #[inline]
     pub fn parse_time(&self) -> f64 {
         self.parser.parse_time()
     }
 
+    #[inline]
     pub fn passed_notes(&self) -> u64 {
-        self.columns
-            .iter()
-            .map(|column| column.data.notes_passed_keyboard)
-            .sum()
+        self.last_passed_notes.load(Ordering::Relaxed)
     }
 }
 
 pub struct LiveNoteColumnView<'a> {
-    view: &'a LiveNoteViewData,
-    column: &'a LiveNoteColumn,
+    colors: &'a [MIDIColor],
+    column: &'a LiveFlatColumn,
     view_range: MIDIViewRange,
+    slice: ColumnWindowSlice,
 }
 
 impl<'a> MIDINoteViews for LiveCurrentNoteViews<'a> {
@@ -122,19 +147,20 @@ impl<'a> MIDINoteViews for LiveCurrentNoteViews<'a> {
 
     fn get_column(&self, key: usize) -> Self::View<'_> {
         LiveNoteColumnView {
-            view: self.data,
-            column: &self.data.columns[key],
-            view_range: self.data.view_range,
+            colors: self.colors,
+            column: &self.guard.columns[key],
+            view_range: self.view_range,
+            slice: self.slices[key],
         }
     }
 
     fn range(&self) -> MIDIViewRange {
-        self.data.view_range
+        self.view_range
     }
 }
 
-struct LiveNoteBlockIter<'a, Iter: Iterator<Item = DisplacedMIDINote>> {
-    view: &'a LiveNoteColumnView<'a>,
+struct LiveNoteBlockIter<Iter: Iterator<Item = DisplacedMIDINote>> {
+    remaining: usize,
     iter: Iter,
 }
 
@@ -145,49 +171,52 @@ impl<'a> MIDINoteColumnView for LiveNoteColumnView<'a> {
         Self: 'b;
 
     fn iterate_displaced_notes(&self) -> Self::Iter<'_> {
-        let colors = &self.view.default_track_colors;
+        let colors = self.colors;
+        let column = self.column;
+        let slice = self.slice;
+        let view_start = self.view_range.start;
 
         let iter = GenIter(
             #[coroutine]
             move || {
-                for block_index in (0..self.column.data.end_block).rev() {
-                    let block = &self.column.blocks[block_index];
-                    let start = (block.start - self.view_range.start) as f32;
+                for block_index in (slice.start_block..slice.end_block).rev() {
+                    let start = (column.block_starts[block_index] - view_start) as f32;
+                    let (note_start, note_end) = column.block_note_range(block_index);
 
-                    for note in block.notes.iter().rev() {
+                    for note_idx in (note_start..note_end).rev() {
                         yield DisplacedMIDINote {
                             start,
-                            len: note.len,
-                            color: colors[note.track_chan.as_usize()],
+                            len: column.note_lens[note_idx],
+                            color: colors[column.note_track_chans[note_idx].as_usize()],
                         };
                     }
                 }
             },
         );
 
-        LiveNoteBlockIter { view: self, iter }
+        LiveNoteBlockIter {
+            remaining: slice.rendered_notes,
+            iter,
+        }
     }
 }
 
-impl<Iter: Iterator<Item = DisplacedMIDINote>> Iterator for LiveNoteBlockIter<'_, Iter> {
+impl<Iter: Iterator<Item = DisplacedMIDINote>> Iterator for LiveNoteBlockIter<Iter> {
     type Item = DisplacedMIDINote;
 
+    #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
+        let item = self.iter.next();
+        if item.is_some() {
+            self.remaining = self.remaining.saturating_sub(1);
+        }
+        item
     }
 }
 
-impl<Iter: Iterator<Item = DisplacedMIDINote>> ExactSizeIterator for LiveNoteBlockIter<'_, Iter> {
+impl<Iter: Iterator<Item = DisplacedMIDINote>> ExactSizeIterator for LiveNoteBlockIter<Iter> {
+    #[inline]
     fn len(&self) -> usize {
-        self.view.column.data.rendered_notes
-    }
-}
-
-impl Drop for LiveNoteViewData {
-    fn drop(&mut self) {
-        let data = std::mem::take(&mut self.columns);
-
-        // Drop the columns in a separate thread because often it takes a long time
-        std::thread::spawn(move || drop(data));
+        self.remaining
     }
 }

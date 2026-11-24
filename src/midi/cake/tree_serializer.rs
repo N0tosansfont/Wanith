@@ -44,7 +44,10 @@ impl std::fmt::Debug for TreeSerializer {
 
 impl TreeSerializer {
     pub fn new() -> TreeSerializer {
-        let written_values = vec![IntVector4::new_empty()];
+        // Reserve index 0 for the root length marker so `complete_and_seal` overwrites it in O(1)
+        // instead of shifting the entire array with `Vec::insert(0, ...)`.
+        // Index 1 is permanently the empty-note sentinel (note address = -1).
+        let written_values = vec![IntVector4::default(), IntVector4::new_empty()];
 
         TreeSerializer {
             note_stack: UnendedNotes::new(),
@@ -60,7 +63,8 @@ impl TreeSerializer {
     fn get_top_note_address(&mut self) -> i32 {
         let top_marker = self.note_stack.top_mut();
         match top_marker {
-            None => 0,
+            // Index 1 holds the empty-note sentinel (negative = note address).
+            None => -1,
 
             // Negative are returned because note addresses are negative
             Some(marker) => match marker.written_pos {
@@ -159,18 +163,19 @@ impl TreeSerializer {
         }
     }
 
-    /// Ends all notes, finishes all stack frames, inserts the address of the last item into the start of the array,
-    /// and returns the array.
+    /// Ends all notes, finishes all stack frames, writes the root index into slot 0 in O(1)
+    /// without shifting the array, and returns the compacted buffer.
     pub fn complete_and_seal(mut self, time: i32) -> Vec<IntVector4> {
         self.end_all_notes(time);
         self.end_all_frames();
 
-        if self.written_values.len() == 1 {
-            self.write_leaf(0, 0, 0, 0);
+        if self.written_values.len() == 2 {
+            self.write_leaf(-1, -1, 0, 0);
         }
 
-        self.written_values
-            .insert(0, IntVector4::new_length_marker(self.written_values.len()));
+        let root_index = self.written_values.len() - 1;
+        self.written_values[0] = IntVector4::new_length_marker(root_index);
+        self.written_values.shrink_to_fit();
 
         self.written_values
     }
@@ -327,5 +332,55 @@ impl TreeSerializer {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::midi::cake::blocks::CakeBlock;
+
+    #[test]
+    fn tree_serializer_o1_seal_matches_empty_and_multi_note_queries() {
+        // Empty key
+        let empty_tree = TreeSerializer::new().complete_and_seal(1000);
+        let empty_block = CakeBlock {
+            start_time: 0,
+            end_time: 1000,
+            tree: empty_tree,
+        };
+        assert!(empty_block.get_note_at(0).is_none());
+        assert!(empty_block.get_note_at(500).is_none());
+        assert_eq!(empty_block.get_notes_passed_at(500), 0);
+
+        // Two non-overlapping notes: [100, 200) color 0x112233 and [400, 600) color 0x445566
+        let mut ser = TreeSerializer::new();
+        ser.start_note(100, 0, 0x112233);
+        ser.end_note(200, 0);
+        ser.start_note(400, 1, 0x445566);
+        ser.end_note(600, 1);
+        let tree = ser.complete_and_seal(1000);
+
+        let block = CakeBlock {
+            start_time: 0,
+            end_time: 1000,
+            tree,
+        };
+        assert!(block.get_note_at(50).is_none());
+        let n1 = block.get_note_at(150).expect("note 1 active at t=150");
+        assert_eq!(n1.start_time, 100);
+        assert_eq!(n1.end_time, 200);
+        assert_eq!(n1.color.as_u32(), 0x112233);
+
+        assert!(block.get_note_at(300).is_none());
+        let n2 = block.get_note_at(500).expect("note 2 active at t=500");
+        assert_eq!(n2.start_time, 400);
+        assert_eq!(n2.end_time, 600);
+        assert_eq!(n2.color.as_u32(), 0x445566);
+
+        assert!(block.get_note_at(700).is_none());
+        assert!(block.get_notes_passed_at(50) == 0);
+        assert!(block.get_notes_passed_at(300) >= 1);
+        assert!(block.get_notes_passed_at(700) >= 2);
     }
 }

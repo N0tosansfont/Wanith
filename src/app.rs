@@ -18,11 +18,12 @@ pub struct WasabiApplication {
 impl WasabiApplication {
     pub fn new() -> Self {
         // Load the settings values
-        let state = WasabiState::new();
+        let mut state = WasabiState::new();
         let settings = WasabiSettings::new_or_load().unwrap_or_else(|e| {
             state.errors.error(&e);
             WasabiSettings::default()
         });
+        state.i18n.set_language(settings.gui.language);
         settings
             .save_to_file()
             .unwrap_or_else(|e| state.errors.error(&e));
@@ -45,13 +46,13 @@ impl ApplicationHandler for WasabiApplication {
             let win_attr = WindowAttributes::default()
                 .with_window_icon(Some(Icon::from_rgba(ICON.to_vec(), 16, 16).unwrap()))
                 .with_inner_size(crate::WINDOW_SIZE)
-                .with_title("Wasabi");
+                .with_title("Wanith");
             let window = event_loop.create_window(win_attr).unwrap();
             self.renderer = Some(Renderer::new(
                 event_loop,
                 window,
                 &mut self.settings,
-                &self.state,
+                &mut self.state,
             ))
         }
     }
@@ -94,7 +95,7 @@ impl ApplicationHandler for WasabiApplication {
                 WindowEvent::DroppedFile(path) => {
                     renderer
                         .gui_window()
-                        .load_midi(path, &mut self.settings, &self.state);
+                        .load_midi(path, &mut self.settings, &mut self.state);
                 }
                 _ => (),
             }

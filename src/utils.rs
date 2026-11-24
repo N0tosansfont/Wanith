@@ -3,8 +3,6 @@ use serde_json::Value;
 use std::thread;
 use std::{collections::HashMap, ops::RangeInclusive};
 
-#[cfg(supported_os)]
-use crate::settings::WasabiSoundfont;
 use crate::{gui::window::WasabiError, state::WasabiState};
 
 pub const WIN_MARGIN: egui::Margin = egui::Margin::same(12);
@@ -38,11 +36,11 @@ pub fn create_window_frame(ctx: &egui::Context) -> egui::Frame {
 }
 
 fn get_latest_version() -> Result<String, WasabiError> {
-    let api_url = "https://api.github.com/repos/BlackMIDIDevs/wasabi/releases/latest";
+    let api_url = "https://api.github.com/repos/N0tosansfont/Wanith/releases/latest";
     let current = format!("v{}", env!("CARGO_PKG_VERSION"));
 
     let client = ClientBuilder::new()
-        .user_agent("Wasabi_Updater")
+        .user_agent("Wanith_Updater")
         .build()
         .map_err(|e| WasabiError::UpdaterError(e.to_string()))?;
     let data = client
@@ -76,34 +74,7 @@ pub fn check_for_updates(state: &WasabiState) {
     });
 }
 
-#[cfg(supported_os)]
-pub fn create_om_sf_list(list: &[WasabiSoundfont]) -> String {
-    let mut out = String::new();
-
-    for sf in list {
-        out += "sf.start\nsf.path = ";
-        out += sf.path.to_str().unwrap_or_default();
-        out += "\nsf.enabled = ";
-        out += if sf.enabled { "1" } else { "0" };
-        out += "\nsf.preload = 1\nsf.srcb = ";
-        let bank = match sf.options.bank {
-            Some(b) => b.to_string(),
-            None => "-1".into(),
-        };
-        out += &bank;
-        out += "\nsf.srcp = ";
-        let preset = match sf.options.preset {
-            Some(p) => p.to_string(),
-            None => "-1".into(),
-        };
-        out += &preset;
-        out += "\nsf.desb = 0\nsf.desp = -1\nsf.desblsb = 0\nsf.xgdrums = 0\nsf.end\n\n"
-    }
-
-    out
-}
-
-#[cfg(supported_os)]
+#[cfg(all(supported_os, not(target_os = "freebsd")))]
 pub fn create_reset_midi_messages() -> Vec<u32> {
     let mut out = Vec::new();
 

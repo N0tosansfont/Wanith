@@ -1,0 +1,79 @@
+#version 450
+
+// 1 thread per workgroup x 256 workgroups => `gl_WorkGroupID.x` is dynamically uniform,
+// requiring no non-uniform descriptor indexing extension and avoiding warp divergence
+// across keys with different binary tree depths.
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+layout(push_constant) uniform MetaPushConstants {
+    int start_time;
+    int end_time;
+    uint key_count;
+    uint _pad;
+} pc;
+
+layout(set = 0, binding = 0) readonly buffer BufferArray {
+    ivec4 BinTree[];
+} buffers[256];
+
+struct KeyMetaOut {
+    uint color;
+    uint has_note;
+    uint passed_start;
+    uint passed_end;
+};
+
+layout(set = 1, binding = 0) writeonly buffer MetaOutBuffer {
+    KeyMetaOut keys[256];
+} meta_out;
+
+ivec4 getNoteAt(uint keyIdx, int time) {
+    int nextIndex = buffers[keyIdx].BinTree[0].x;
+    int steps = 0;
+    while (steps < 100) {
+        ivec4 node = buffers[keyIdx].BinTree[nextIndex];
+        int offset = (time < node.x) ? node.y : node.z;
+        if (offset > 0) {
+            nextIndex -= offset;
+            break;
+        }
+        nextIndex += offset;
+        steps++;
+    }
+    return buffers[keyIdx].BinTree[nextIndex];
+}
+
+uint getNotesPassedAt(uint keyIdx, int time) {
+    uint lastNotesPassed = 0u;
+    int nextIndex = buffers[keyIdx].BinTree[0].x;
+    int steps = 0;
+    while (steps < 100) {
+        ivec4 node = buffers[keyIdx].BinTree[nextIndex];
+        int offset = (time < node.x) ? node.y : node.z;
+        lastNotesPassed = uint(node.w);
+        if (offset > 0) {
+            break;
+        }
+        nextIndex += offset;
+        steps++;
+    }
+    return lastNotesPassed;
+}
+
+void main() {
+    uint keyIdx = gl_WorkGroupID.x;
+    if (keyIdx >= pc.key_count) {
+        return;
+    }
+
+    ivec4 note = getNoteAt(keyIdx, pc.start_time);
+    uint hasNote = (note.z == -1) ? 0u : 1u;
+    uint color = (hasNote != 0u) ? uint(note.z) : 0u;
+    uint passedStart = getNotesPassedAt(keyIdx, pc.start_time);
+    uint passedEnd = getNotesPassedAt(keyIdx, pc.end_time);
+
+    meta_out.keys[keyIdx].color = color;
+    meta_out.keys[keyIdx].has_note = hasNote;
+    meta_out.keys[keyIdx].passed_start = passedStart;
+    meta_out.keys[keyIdx].passed_end = passedEnd;
+}
