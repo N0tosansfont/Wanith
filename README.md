@@ -56,9 +56,13 @@ Wasabi is licensed under the [GNU General Public License v3.0](https://www.gnu.o
 ## Note from the Author
 
 Hi! I'm just an ordinary person living in a small city in South Korea.  
-I deeply love and respect everyone in the Black MIDI community—including the original Wasabi developers, synth engineers, MIDI creators, and players—and I hold no ill will toward anyone. This fork/project was crafted via CLI out of pure passion for exploring real-time playback and rendering limits :)
+This project is **based on Wasabi**, and I intentionally left the original Wasabi branding and preview assets untouched out of respect for the original developers. All engine tuning, lock-free `kdmapiv3` integration, and optimization work were crafted via CLI with AI assistance.
+
+I deeply love and respect everyone in the Black MIDI community—original Wasabi developers, synth engineers, MIDI creators, and players alike—and I hold no ill will toward anyone. This was built out of pure passion for exploring real-time playback limits :)
 
 ---
 
 안녕하세요! 대한민국에 살고 있는 한 소도시 사람입니다.  
-원본 Wasabi 개발자분들을 비롯한 검은악보(Black MIDI) 관련자분들 모두를 사랑하고 존경하며, 어떠한 악감정도 없습니다. 순수한 애정으로 CLI 환경에서 작업했습니다 :)
+이 프로젝트는 **Wasabi를 기반**으로 제작되었으며, 원작 개발자분들에 대한 존중의 의미로 기존 Wasabi 로고와 미리보기 리소스는 수정하지 않고 그대로 남겨두었습니다. 엔진 튜닝과 락프리 `kdmapiv3` 직결, 최적화 작업은 AI의 도움을 받아 CLI 환경에서 작업했습니다.
+
+원본 Wasabi 개발자분들을 비롯한 검은악보(Black MIDI) 관련자분들 모두를 사랑하고 존경하며, 어떠한 악감정도 없습니다. 순수한 애정으로 한계 테스트를 위해 만든 프로젝트입니다 :)
