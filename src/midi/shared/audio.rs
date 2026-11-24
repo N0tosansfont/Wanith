@@ -317,15 +317,15 @@ impl CompressedAudio {
                     let ev = next & 0xF0;
                     let val = match ev {
                         EV_OFF | EV_PROGRAM | EV_CHAN_PRESSURE => {
-                            let val2 = iter.next().unwrap() as u32;
-                            (next as u32) | (val2 << 8)
+                            let Some(d1) = iter.next() else { break };
+                            (next as u32) | ((d1 as u32) << 8)
                         }
                         EV_ON | EV_POLYPHONIC | EV_CONTROL | EV_PITCH_BEND => {
-                            let val2 = iter.next().unwrap() as u32;
-                            let val3 = iter.next().unwrap() as u32;
-                            (next as u32) | (val2 << 8) | (val3 << 16)
+                            let Some(d1) = iter.next() else { break };
+                            let Some(d2) = iter.next() else { break };
+                            (next as u32) | ((d1 as u32) << 8) | ((d2 as u32) << 16)
                         }
-                        _ => panic!("Can't reach {next:#x}"),
+                        _ => continue,
                     };
 
                     yield val;

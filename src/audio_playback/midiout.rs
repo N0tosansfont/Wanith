@@ -49,7 +49,7 @@ impl MidiDevicePlayer {
 
     pub fn push_events(&mut self, data: impl Iterator<Item = u32>) {
         for ev in data {
-            self.sender.send(ev).unwrap();
+            if self.sender.send(ev).is_err() { break; }
         }
     }
 }

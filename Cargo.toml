@@ -49,7 +49,7 @@ num_enum = "0.7.4"
 palette = "0.7.6"
 colors-transform = "0.2"
 numfmt = "1.2.0"
-kdmapiv3 = { package = "kdmapiv3", git = "https://github.com/N0tosansfont/kdmapiv3.git", tag = "v0.1.0" }
+kdmapiv3 = { package = "kdmapiv3", git = "https://github.com/N0tosansfont/kdmapiv3.git", tag = "v0.1.1" }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
 midir = "0.10.2"
@@ -68,3 +68,4 @@ opt-level = 2
 opt-level = 3
 codegen-units = 1
 lto = true
+
